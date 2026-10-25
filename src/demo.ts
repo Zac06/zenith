@@ -50,8 +50,8 @@ const contents = (cid: number): Section[] => {
   ];
 };
 const assigns = (cid: number): Assign[] => [
-  { id: cid * 100 + 50004, cmid: cid * 100 + 4, name: "Problem set 1", duedate: now + 3 * DAY, allowsubmissionsfromdate: 0, intro: "<p>Solve the exercises in the attached sheet and upload your answers as a single PDF.</p>", introattachments: [file(cid, "problem-set-1.pdf", 90000)] },
-  { id: cid * 100 + 50005, cmid: cid * 100 + 5, name: "Reading response", duedate: now - 5 * DAY, allowsubmissionsfromdate: 0, intro: "<p>One page on this week's reading.</p>" },
+  { id: cid * 100 + 50004, cmid: cid * 100 + 4, name: "Problem set 1", duedate: now + 3 * DAY, allowsubmissionsfromdate: 0, submissiondrafts: 0, configs: [{ plugin: "file", subtype: "assignsubmission", name: "enabled", value: "1" }, { plugin: "onlinetext", subtype: "assignsubmission", name: "enabled", value: "1" }], intro: "<p>Solve the exercises in the attached sheet and upload your answers as a single PDF.</p>", introattachments: [file(cid, "problem-set-1.pdf", 90000)] },
+  { id: cid * 100 + 50005, cmid: cid * 100 + 5, name: "Reading response", duedate: now - 5 * DAY, allowsubmissionsfromdate: 0, configs: [{ plugin: "onlinetext", subtype: "assignsubmission", name: "enabled", value: "1" }], intro: "<p>One page on this week's reading.</p>" },
   { id: cid * 100 + 50006, cmid: cid * 100 + 6, name: "Lab report", duedate: now + 20 * DAY, allowsubmissionsfromdate: now + 7 * DAY, intro: "<p>Write up your results from the lab session.</p>" },
 ];
 
@@ -72,8 +72,10 @@ const ws = (fn: string, p: Record<string, string>): unknown => {
     case "mod_assign_get_assignments": return { courses: [{ assignments: assigns(Number(p["courseids[0]"])) }] };
     case "mod_assign_get_submission_status": {
       const done = Number(p.assignid) % 100 === 5;
-      return { lastattempt: { submission: { status: done ? "submitted" : "new" } }, feedback: done ? { gradefordisplay: "92.00 / 100.00" } : {} };
+      return { lastattempt: { canedit: true, submission: { status: done ? "submitted" : "new", plugins: [] } }, feedback: done ? { gradefordisplay: "92.00 / 100.00" } : {} };
     }
+    case "mod_assign_save_submission": case "mod_assign_submit_for_grading": return [];
+    case "mod_forum_get_forum_discussions": return { discussions: [{ discussion: 1, subject: "Welcome to the course", message: "<p>Lectures start on Monday. Bring the textbook.</p>", userfullname: "Course team", created: now - 2 * DAY, numreplies: 0 }] };
   }
   throw "Not available in screenshot mode.";
 };
@@ -84,6 +86,8 @@ export const fake = async (cmd: string, args: any): Promise<unknown> => {
     case "get_session": return { site: SITE, token: "screenshot-mode" };
     case "ws_call": return ws(args.function, args.params);
     case "download_file": return { path: "", reused: false };
+    case "upload_draft_file": return 0;
+    case "fetch_content": return "<h1>Sample page</h1><p>An HTML resource shown inside the app.</p>";
     case "list_downloads": return [];
     case "default_download_dir": return "";
     case "delete_downloads": return 0;

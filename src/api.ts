@@ -11,7 +11,7 @@ export type Session = { site: string; token: string };
 export type Info = { userid: number; fullname: string; sitename: string };
 export type Filter = "all" | "inprogress" | "future" | "past" | "favourites" | "hidden";
 export type Course = { id: number; fullname: string; shortname: string; progress?: number | null; courseimage?: string; isfavourite?: boolean; hidden?: boolean };
-export type FileItem = { type: string; filename: string; fileurl: string; filesize: number; timemodified?: number };
+export type FileItem = { type: string; filename: string; fileurl: string; filesize: number; timemodified?: number; mimetype?: string };
 export type Module = { id: number; name: string; modname: string; instance?: number; uservisible?: boolean; availabilityinfo?: string; url?: string; description?: string; contents?: FileItem[] };
 // component/itemid are set on sections that belong to a subsection activity (Moodle 4.5+)
 export type Section = { id: number; name: string; summary?: string; component?: string | null; itemid?: number | null; modules: Module[] };
@@ -41,8 +41,8 @@ export const setHidden = (uid: number, id: number, hide: boolean) => {
 export const courseContents = (id: number) => ws<Section[]>("core_course_get_contents", { courseid: String(id) });
 export type DlMode = "updated" | "reuse" | "always";
 export type DlEntry = { path: string; course: string; name: string; size: number; at: number };
-export const download = (url: string, dir: string, subdir: string, filename: string, mode: DlMode, modified?: number, force = false) =>
-  invoke<{ path: string; reused: boolean }>("download_file", { url, dir, subdir, filename, mode, modified: modified ?? null, force });
+export const download = (id: string, url: string, dir: string, subdir: string, filename: string, mode: DlMode, modified?: number, force = false) =>
+  invoke<{ path: string; reused: boolean }>("download_file", { id, url, dir, subdir, filename, mode, modified: modified ?? null, force });
 export const defaultDownloadDir = () => invoke<string>("default_download_dir");
 export const listDownloads = () => invoke<DlEntry[]>("list_downloads");
 export const deleteDownloads = (paths?: string[]) => invoke<number>("delete_downloads", { paths: paths ?? null });
@@ -80,12 +80,55 @@ export const enrolledCourses = (uid: number) => ws<{ id: number }[]>("core_enrol
 // opens a web link in the system browser (Rust side; also works from inside an AppImage)
 export const openExternal = (url: string) => invoke<void>("open_external", { url });
 
-// assignments: read-only. The site may not expose these functions, so callers treat failure as "no assignment info".
-export type Assign = { id: number; cmid: number; name: string; duedate: number; allowsubmissionsfromdate: number; intro?: string; introattachments?: FileItem[] };
+// assignments: the site may not expose these functions, so callers treat failure as "no assignment info".
+export type Assign = { id: number; cmid: number; name: string; duedate: number; allowsubmissionsfromdate: number; cutoffdate?: number; intro?: string; introattachments?: FileItem[]; nosubmissions?: number; submissiondrafts?: number; requiresubmissionstatement?: number; configs?: { plugin?: string; subtype?: string; name: string; value: string }[] };
 export const courseAssignments = async (courseid: number) =>
   (await ws<{ courses: { assignments: Assign[] }[] }>("mod_assign_get_assignments", { "courseids[0]": String(courseid) })).courses[0]?.assignments ?? [];
-export type AssignStatus = { submission: string; grade?: string };
+export type AssignStatus = { submission: string; grade?: string; text?: string; files?: FileItem[]; canEdit?: boolean };
 export const assignStatus = async (assignid: number): Promise<AssignStatus> => {
   const r = await ws<any>("mod_assign_get_submission_status", { assignid: String(assignid) });
-  return { submission: r.lastattempt?.submission?.status ?? "new", grade: r.feedback?.gradefordisplay?.replace(/<[^>]*>/g, "").trim() || undefined };
+  const sub = r.lastattempt?.submission;
+  const plugins: any[] = sub?.plugins ?? [];
+  return {
+    submission: sub?.status ?? "new",
+    grade: r.feedback?.gradefordisplay?.replace(/<[^>]*>/g, "").trim() || undefined,
+    text: plugins.find((p) => p.type === "onlinetext")?.editorfields?.[0]?.text ?? "",
+    files: plugins.find((p) => p.type === "file")?.fileareas?.[0]?.files ?? [],
+    canEdit: r.lastattempt?.canedit !== false && r.lastattempt?.locked !== true,
+  };
+};
+// Saves a draft. Plug-ins left out keep what is already saved, so editing the text never drops the attachments.
+export const saveSubmission = async (assignmentid: number, p: { text?: string; fileItemId?: number }) => {
+  const params: Record<string, string> = { assignmentid: String(assignmentid) };
+  if (p.text !== undefined) {
+    params["plugindata[onlinetext_editor][text]"] = p.text;
+    params["plugindata[onlinetext_editor][format]"] = "1";
+    params["plugindata[onlinetext_editor][itemid]"] = "0";
+  }
+  if (p.fileItemId !== undefined) params["plugindata[files_filemanager]"] = String(p.fileItemId);
+  const r = await ws<any>("mod_assign_save_submission", params);
+  if (Array.isArray(r) && r.length) throw new Error(r[0]?.message ?? "Moodle refused the submission");
+};
+export const submitForGrading = async (assignmentid: number) => {
+  const r = await ws<any>("mod_assign_submit_for_grading", { assignmentid: String(assignmentid), acceptsubmissionstatement: "1" });
+  if (Array.isArray(r) && r.length) throw new Error(r[0]?.message ?? "Moodle refused the submission");
+};
+export const uploadDraftFile = (path: string, itemid: number, userid: number) =>
+  invoke<number>("upload_draft_file", { path, itemid, userid });
+
+// A saved HTML resource, fetched with the token so it can be shown inside the app (not stripped of its pictures).
+export const fetchContent = (url: string) => invoke<string>("fetch_content", { url });
+
+// Announcements and every other forum: read the discussions without opening a browser.
+export type Discussion = { id: number; subject: string; message?: string; author?: string; created?: number; replies?: number };
+export const forumDiscussions = async (forumid: number) => {
+  const r = await ws<{ discussions?: any[] }>("mod_forum_get_forum_discussions", { forumid: String(forumid) });
+  return (r.discussions ?? []).map((d): Discussion => ({
+    id: d.discussion ?? d.id,
+    subject: d.subject || d.name || "(no subject)",
+    message: d.message,
+    author: d.userfullname,
+    created: d.created ?? d.timemodified,
+    replies: d.numreplies,
+  }));
 };

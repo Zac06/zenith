@@ -26,6 +26,7 @@ const P: Record<string, string> = {
   eyeoff: "M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94 M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19 M1 1l22 22",
   eye: "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z",
   ext: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6 M15 3h6v6 M10 14L21 3",
+  wifi: "M5 12.55a11 11 0 0 1 14.08 0 M1.42 9a16 16 0 0 1 21.16 0 M8.53 16.11a6 6 0 0 1 6.95 0 M12 20h.01",
 };
 const Icon = ({ n, s = 18 }: { n: string; s?: number }) => (
   <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d={P[n]} /></svg>
@@ -39,11 +40,41 @@ const tone = (id: number) => `hsl(${hue(id)} 30% 34%)`;
 // Moodle's auto-generated covers are data: URIs -> keep our flat colour; real images need the token
 // the token is only ever attached to URLs on the Moodle site itself, never to a host named inside course content
 const sameOrigin = (site: string, u: string) => { try { return new URL(u, site).origin === new URL(site).origin; } catch { return false; } };
-const realImage = (u: string | undefined, site: string, token: string) => {
-  if (!u || u.startsWith("data:")) return null;
-  if (!sameOrigin(site, u)) return u;
-  const w = u.includes("/webservice/pluginfile.php") ? u : u.replace("/pluginfile.php", "/webservice/pluginfile.php");
-  return w + (w.includes("?") ? "&" : "?") + "token=" + token;
+// Same-site Moodle files need the token; plain pluginfile.php only works with a browser session, so use the ws endpoint.
+// Relative URLs are made absolute too: on macOS they would otherwise resolve against tauri://localhost and never load.
+const tokenised = (u: string, site: string, token: string) => {
+  try {
+    const abs = new URL(u, site);
+    if (abs.origin !== new URL(site).origin) return u;
+    if (!/\/(?:webservice\/)?(?:pluginfile|draftfile)\.php(?:\/|$)/.test(abs.pathname)) return abs.toString();
+    if (!abs.pathname.includes("/webservice/")) abs.pathname = abs.pathname.replace(/\/(pluginfile|draftfile)\.php/, "/webservice/$1.php");
+    abs.searchParams.set("token", token);
+    return abs.toString();
+  } catch { return u; }
+};
+const realImage = (u: string | undefined, site: string, token: string) => (u && !u.startsWith("data:") ? tokenised(u, site, token) : null);
+const isHtmlFile = (f: api.FileItem) => /\.html?$/i.test(f.filename) || f.mimetype === "text/html";
+if (import.meta.env.DEV) {
+  console.assert(tokenised("/pluginfile.php/1/a.png", "https://m.uni.edu", "t") === "https://m.uni.edu/webservice/pluginfile.php/1/a.png?token=t");
+  console.assert(tokenised("https://other.edu/a.png", "https://m.uni.edu", "t") === "https://other.edu/a.png");
+}
+// Saved API answers, so courses that were already opened stay readable without a connection.
+const CACHE = "zenith:cache:";
+const cacheGet = <T,>(k: string): T | undefined => { try { const v = localStorage.getItem(CACHE + k); return v === null ? undefined : JSON.parse(v) as T; } catch { return undefined; } };
+const cacheSet = (k: string, v: unknown) => { try { localStorage.setItem(CACHE + k, JSON.stringify(v)); } catch {} };
+const cacheClear = () => { for (const k of Object.keys(localStorage)) if (k.startsWith(CACHE)) localStorage.removeItem(k); };
+// A dropped connection must never sign anyone out: only Moodle rejecting the token should.
+const authError = (e: unknown) => /invalid\s*token|accessexception|servicerequireslogin|usernotloggedin/i.test(String(e));
+// A saved HTML file links its pictures relative to its own pluginfile folder; make those absolute before sanitising.
+const absolutise = (html: string, base: string) => {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll("[src],[href],[poster]").forEach((el) => {
+    for (const a of ["src", "href", "poster"]) {
+      const v = el.getAttribute(a);
+      if (v && !/^(?:[a-z][a-z0-9+.-]*:|#|\/\/)/i.test(v)) el.setAttribute(a, new URL(v, base).toString());
+    }
+  });
+  return doc.body.innerHTML;
 };
 const FILTERS: [api.Filter, string][] = [["all", "All"], ["inprogress", "In progress"], ["future", "Future"], ["past", "Ended"], ["favourites", "Favourites"], ["hidden", "Hidden"]];
 
@@ -95,8 +126,19 @@ DOMPurify.addHook("afterSanitizeAttributes", (el) => {
 
 // Moodle HTML (section summaries, labels): sanitised, files get the token, link clicks are routed through onLink
 function Html({ html, site, token, onLink }: { html: string; site: string; token: string; onLink: (href: string) => void }) {
-  const clean = useMemo(() => { htmlSite = site; return DOMPurify.sanitize(html, { FORBID_ATTR: ["style", "class", "id", "srcset"], FORBID_TAGS: ["style", "form", "input", "button", "image"] })
-    .replace(/src="([^"]*\/webservice\/pluginfile\.php[^"]*)"/g, (m, u) => sameOrigin(site, u) ? `src="${u}${u.includes("?") ? "&amp;" : "?"}token=${token}"` : m); }, [html, site, token]);
+  const clean = useMemo(() => {
+    htmlSite = site;
+    const s = DOMPurify.sanitize(html, { FORBID_ATTR: ["style", "class", "id", "srcset"], FORBID_TAGS: ["style", "form", "input", "button", "image"] });
+    // tokenise and absolutise every surviving file URL (relative ones, plain /pluginfile.php and the ws endpoint)
+    const doc = new DOMParser().parseFromString(s, "text/html");
+    doc.querySelectorAll("[src],[poster]").forEach((el) => {
+      for (const a of ["src", "poster"]) {
+        const v = el.getAttribute(a);
+        if (v) el.setAttribute(a, tokenised(v, site, token));
+      }
+    });
+    return doc.body.innerHTML;
+  }, [html, site, token]);
   return <div className="html" dangerouslySetInnerHTML={{ __html: clean }}
     onClick={(e) => { const a = (e.target as HTMLElement).closest("a"); if (!a) return; e.preventDefault(); const h = a.getAttribute("href"); if (h) onLink(h); }} />;
 }
@@ -106,49 +148,122 @@ const SUBMISSION: Record<string, string> = { new: "Not submitted", draft: "Draft
 const plain = (h: string) => new DOMParser().parseFromString(h, "text/html").body.textContent?.replace(/\s+/g, " ").trim() ?? "";
 const when = (t: number) => new Date(t * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
-function AssignRow({ a, site, token, onLink, getFile }: { a: api.Assign; site: string; token: string; onLink: (href: string) => void; getFile: (f: api.FileItem) => void }) {
-  const [open, setOpen] = useState(false); const [st, setSt] = useState<api.AssignStatus | null>(null); const [err, setErr] = useState("");
-  const toggle = () => { setOpen(!open); if (!open && !st) api.assignStatus(a.id).then(setSt).catch((e) => setErr(String(e))); };
+const pluginOn = (a: api.Assign, what: "file" | "onlinetext") => {
+  // Moodle reports submission plugins with plugin = "file" / "onlinetext" (subtype is "assignsubmission").
+  // Feedback plugins reuse the type "file", so exclude them.
+  const c = a.configs?.find((x) => x.subtype !== "assignfeedback" && x.plugin === what && x.name === "enabled");
+  return c?.value === "1";
+};
+
+function AssignRow({ a, site, token, uid, onLink, getFile }: { a: api.Assign; site: string; token: string; uid: number; onLink: (href: string) => void; getFile: (f: api.FileItem) => void }) {
+  const [expanded, setExpanded] = useState(false); const [st, setSt] = useState<api.AssignStatus | null>(null); const [err, setErr] = useState("");
+  const [text, setText] = useState(""); const [loadedText, setLoadedText] = useState(""); const [picked, setPicked] = useState<string[]>([]); const [saving, setSaving] = useState(false); const [msg, setMsg] = useState(""); const [agreed, setAgreed] = useState(false);
+  // Moodle returns the answer as formatted HTML; edit it as plain text and only send it back when changed,
+  // so attaching a file to an existing answer never flattens it. shortcut: rich formatting is lost on edit.
+  const load = () => api.assignStatus(a.id).then((s) => { setSt(s); const t = plain(s.text ?? ""); setText(t); setLoadedText(t); setErr(""); }).catch((e) => setErr(String(e)));
+  const toggle = () => { setExpanded(!expanded); if (!expanded && !st) load(); };
   const late = a.duedate > 0 && a.duedate * 1000 < Date.now();
   const locked = a.allowsubmissionsfromdate * 1000 > Date.now();   // 0 = no opening date
+  const drafts = a.submissiondrafts === 1;
+  const canEdit = !a.nosubmissions && st?.canEdit !== false;
+  const needsAgree = a.requiresubmissionstatement === 1 && !agreed;
+  const choose = async () => {
+    try {
+      const p = await open({ multiple: true, title: "Attach files" });
+      const paths = typeof p === "string" ? [p] : p ?? [];
+      setPicked([...picked, ...paths]);
+    } catch (e) { setMsg(String(e)); }
+  };
+  const send = async (graded: boolean) => {
+    if ((graded || !drafts) && needsAgree) { setMsg("Accept the submission statement before submitting."); return; }
+    if (!pluginOn(a, "onlinetext") && !picked.length && !st?.files?.length) { setMsg("Choose at least one file to submit."); return; }
+    setSaving(true); setMsg("");
+    const submitting = graded || !drafts;
+    try {
+      let itemid: number | undefined;
+      if (picked.length) { itemid = 0; for (const path of picked) itemid = await api.uploadDraftFile(path, itemid, uid); }
+      await api.saveSubmission(a.id, {
+        ...(pluginOn(a, "onlinetext") && text !== loadedText ? { text } : {}),
+        ...(itemid !== undefined ? { fileItemId: itemid } : {}),
+      });
+      if (submitting) await api.submitForGrading(a.id);
+      await load(); setPicked([]);
+      setMsg(submitting ? "Submitted for grading." : "Saved.");
+    } catch (e) { setMsg(String(e).replace(/^Error: /, "")); }
+    setSaving(false);
+  };
   return (<>
     <button className="item" onClick={toggle}>
       <span className="ico"><Icon n={locked ? "lock" : "check"} /></span>
       <span className="grow">{a.name}{locked && <small>Locked until {when(a.allowsubmissionsfromdate)}</small>}<small>{a.duedate ? (late ? "Was due " : "Due ") + when(a.duedate) : "No due date"}</small></span>
-      <span className={open ? "chev" : "chev shut"}><Icon n="chev" /></span>
+      <span className={expanded ? "chev" : "chev shut"}><Icon n="chev" /></span>
     </button>
-    {open && <div className="summary">
+    {expanded && <div className="summary">
       {hasContent(a.intro) && <Html site={site} html={a.intro!} token={token} onLink={onLink} />}
       <p>{err ? "Status unavailable: " + err : st ? SUBMISSION[st.submission] ?? st.submission : "Loading status…"}{st?.grade ? ` · Grade ${st.grade}` : ""}</p>
-      <div className="joinrow">
-        {(a.introattachments ?? []).map((f) => <button className="btn" key={f.filename} onClick={() => getFile({ ...f, type: "file" })}>{f.filename}</button>)}
-        {!locked && <button className="btn" onClick={() => api.openWeb(`${site}/mod/assign/view.php?id=${a.cmid}`)}>Submit in browser</button>}
-      </div>
+      {!!st?.files?.length && <div className="joinrow">{st.files.map((f) => <button className="btn" key={f.fileurl} onClick={() => getFile({ ...f, type: "file" })}>{f.filename}</button>)}</div>}
+      {(a.introattachments ?? []).length > 0 && <div className="joinrow">{(a.introattachments ?? []).map((f) => <button className="btn" key={f.filename} onClick={() => getFile({ ...f, type: "file" })}>{f.filename}</button>)}</div>}
+      {!locked && canEdit && st && (pluginOn(a, "file") || pluginOn(a, "onlinetext")) && (
+        <div className="submit">
+          {pluginOn(a, "onlinetext") && <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Write your answer…" rows={5} />}
+          {pluginOn(a, "file") && <div className="joinrow">
+            <button className="btn" onClick={choose}>Attach files…</button>
+            {picked.map((p) => <span className="chip" key={p}>{p.split(/[\\/]/).pop()}</span>)}
+          </div>}
+          {picked.length > 0 && <small className="muted">The attached files replace any files already submitted. Leave this empty to keep them.</small>}
+          {a.requiresubmissionstatement === 1 && <label className="agree"><input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} /> This assignment requires me to accept its submission statement.</label>}
+          <div className="joinrow">
+            {drafts && <button className="btn" disabled={saving} onClick={() => send(false)}>{saving ? "Working…" : "Save draft"}</button>}
+            <button className="primary sm" disabled={saving || needsAgree} onClick={() => send(drafts)}>{saving ? "Working…" : drafts ? "Submit for grading" : "Submit"}</button>
+          </div>
+          {msg && <p className="muted">{msg}</p>}
+        </div>)}
+      {!locked && <button className="btn" onClick={() => api.openWeb(`${site}/mod/assign/view.php?id=${a.cmid}`)}>Open in browser</button>}
     </div>}
   </>);
 }
 
-function CourseView({ c, site, token, ensureDir, notify, onLink, dlMode }: { c: api.Course; site: string; token: string; ensureDir: () => Promise<string | null>; notify: (m: string) => void; onLink: (href: string) => void; dlMode: api.DlMode }) {
+type Dl = { id: string; name: string; done: number; total: number | null };
+
+function CourseView({ c, site, token, uid, ensureDir, notify, onLink, onHtml, onForum, dlMode, setDl }: { c: api.Course; site: string; token: string; uid: number; ensureDir: () => Promise<string | null>; notify: (m: string) => void; onLink: (href: string) => void; onHtml: (title: string, url: string) => void; onForum: (title: string, id: number) => void; dlMode: api.DlMode; setDl: React.Dispatch<React.SetStateAction<Dl | null>> }) {
   const [secs, setSecs] = useState<api.Section[] | null>(null); const [err, setErr] = useState(""); const [closed, setClosed] = useState<Record<number, boolean>>({});
-  useEffect(() => { setSecs(null); setErr(""); api.courseContents(c.id).then(setSecs).catch((e) => setErr(String(e))); }, [c.id]);
+  useEffect(() => {
+    setSecs(null); setErr("");
+    const key = "contents:" + c.id, cached = cacheGet<api.Section[]>(key);
+    if (!navigator.onLine && cached) { setSecs(cached); return; }
+    api.courseContents(c.id).then((s) => { setSecs(s); cacheSet(key, s); })
+      .catch((e) => { if (cached && !authError(e)) setSecs(cached); else setErr(navigator.onLine || authError(e) ? String(e) : "You're offline and this course hasn't been opened in the app before."); });
+  }, [c.id]);
   const course = c.shortname || c.fullname;
   const [assigns, setAssigns] = useState<Map<number, api.Assign>>(new Map());   // by course-module id; empty if the site hides the function
-  useEffect(() => { setAssigns(new Map()); api.courseAssignments(c.id).then((l) => setAssigns(new Map(l.map((a) => [a.cmid, a])))).catch(() => {}); }, [c.id]);
+  useEffect(() => {
+    setAssigns(new Map());
+    const key = "assigns:" + c.id, cached = cacheGet<api.Assign[]>(key);
+    if (!navigator.onLine && cached) { setAssigns(new Map(cached.map((a) => [a.cmid, a]))); return; }
+    api.courseAssignments(c.id).then((l) => { setAssigns(new Map(l.map((a) => [a.cmid, a]))); cacheSet(key, l); })
+      .catch(() => { if (cached) setAssigns(new Map(cached.map((a) => [a.cmid, a]))); });
+  }, [c.id]);
   const [saved, setSaved] = useState<Set<string>>(new Set()); const [menu, setMenu] = useState<{ f: api.FileItem; x: number; y: number } | null>(null);
   const refreshSaved = () => api.listDownloads().then((l) => setSaved(new Set(l.map((e) => e.course + "::" + e.name)))).catch(() => {});
   useEffect(() => { refreshSaved(); }, []);
   useEffect(() => { const h = () => setMenu(null); window.addEventListener("click", h); return () => window.removeEventListener("click", h); }, []);
   const getFile = async (f: api.FileItem, force = false) => {
     setMenu(null);
+    // a Moodle-hosted HTML resource is a page, not a bare file: show it in the app with its pictures and links intact
+    if (isHtmlFile(f) && sameOrigin(site, f.fileurl)) { onHtml(f.filename, f.fileurl); return; }
+    if (!navigator.onLine && !saved.has(course + "::" + f.filename)) { notify(f.filename + " isn't downloaded yet — connect to the internet to get it."); return; }
     const dir = (await ensureDir()) ?? "";   // empty = default folder; changing it is done in Settings
     notify((force ? "Downloading " : "Opening ") + f.filename + "…");
+    const id = Date.now() + "-" + Math.random().toString(36).slice(2);
+    setDl({ id, name: f.filename, done: 0, total: null });
     try {
-      const r = await api.download(f.fileurl, dir, course, f.filename, dlMode, f.timemodified, force);
+      const r = await api.download(id, f.fileurl, dir, course, f.filename, dlMode, f.timemodified, force);
       notify(r.reused ? "Opened saved copy of " + f.filename : "Downloaded " + f.filename); refreshSaved();
     } catch (e) { notify("Download failed: " + e); }
+    finally { setTimeout(() => setDl((d) => (d?.id === id ? null : d)), 400); }
   };
   if (err) return (
-    <div className="sec pad"><p>This course can't be shown in the app (you may not be enrolled).</p><small>{err}</small><br />
+    <div className="sec pad"><p>{navigator.onLine ? "This course can't be shown in the app (you may not be enrolled)." : "You're offline and this course hasn't been saved yet."}</p><small>{err}</small><br />
       <button className="primary" onClick={() => api.openWeb(`${site}/course/view.php?id=${c.id}`)}>Open in browser</button></div>);
   if (!secs) return <div className="muted pad">Loading course…</div>;
   // Moodle 4.5+ subsections: the activity sits in its parent section, its content is an extra
@@ -173,7 +288,13 @@ function CourseView({ c, site, token, ensureDir, notify, onLink, dlMode }: { c: 
       <div className="item locked" key={m.id}><span className="ico"><Icon n="lock" /></span>
         <span className="grow">{m.name}<small>Locked</small>{m.availabilityinfo && <small>{plain(m.availabilityinfo)}</small>}</span></div>);
     const a = m.modname === "assign" ? assigns.get(m.id) : undefined;
-    if (a) return <AssignRow key={m.id} a={a} site={site} token={token} onLink={onLink} getFile={getFile} />;
+    if (a) return <AssignRow key={m.id} a={a} site={site} token={token} uid={uid} onLink={onLink} getFile={getFile} />;
+    if (m.modname === "forum" && m.instance) return (
+      <button className="item" key={m.id} onClick={() => onForum(m.name, m.instance!)}>
+        <span className="ico"><Icon n="chat" /></span>
+        <span className="grow">{m.name}<small>announcements and discussion · opens in the app</small></span>
+        <Icon n="chev" s={16} />
+      </button>);
     const files = (m.contents ?? []).filter((f) => f.type === "file");
     if (files.length) return files.map((f) => {
       const isSaved = saved.has(course + "::" + f.filename);
@@ -203,6 +324,44 @@ function CourseView({ c, site, token, ensureDir, notify, onLink, dlMode }: { c: 
     {menu && <div className="menu" style={{ position: "fixed", top: menu.y, right: menu.x }} onClick={(e) => e.stopPropagation()}>
       <button onClick={() => getFile(menu.f, true)}><Icon n="down" s={16} />Download again</button></div>}
   </div>);
+}
+
+function HtmlPage({ title, url, site, token, onLink, onClose }: { title: string; url: string; site: string; token: string; onLink: (href: string) => void; onClose: () => void }) {
+  const [body, setBody] = useState<string | null>(null); const [err, setErr] = useState("");
+  useEffect(() => {
+    const key = "html:" + url, cached = cacheGet<string>(key);
+    if (!navigator.onLine && cached !== undefined) { setBody(cached); return; }
+    api.fetchContent(url).then((h) => { setBody(h); cacheSet(key, h); })
+      .catch((e) => { if (cached !== undefined) setBody(cached); else setErr(navigator.onLine ? String(e) : "You're offline and this page hasn't been opened before."); });
+  }, [url]);
+  const html = useMemo(() => (body === null ? "" : absolutise(body, url)), [body, url]);
+  return (<>
+    <div className="bar"><button className="icon" onClick={onClose}><Icon n="back" /></button><h1>{title}</h1></div>
+    {err ? <div className="sec pad"><p>{err}</p><button className="primary" onClick={() => api.openWeb(url)}>Open in browser</button></div>
+      : body === null ? <p className="muted pad">Loading…</p>
+      : <section className="sec"><div className="summary"><Html site={site} html={html} token={token} onLink={onLink} /></div></section>}
+  </>);
+}
+
+function ForumPage({ title, id, site, token, onLink, onClose }: { title: string; id: number; site: string; token: string; onLink: (href: string) => void; onClose: () => void }) {
+  const [list, setList] = useState<api.Discussion[] | null>(null); const [err, setErr] = useState("");
+  useEffect(() => {
+    const key = "forum:" + id, cached = cacheGet<api.Discussion[]>(key);
+    if (!navigator.onLine && cached) { setList(cached); return; }
+    api.forumDiscussions(id).then((d) => { setList(d); cacheSet(key, d); })
+      .catch((e) => { if (cached) setList(cached); else setErr(navigator.onLine ? String(e) : "You're offline and these announcements haven't been opened before."); });
+  }, [id]);
+  return (<>
+    <div className="bar"><button className="icon" onClick={onClose}><Icon n="back" /></button><h1>{title}</h1></div>
+    {err ? <div className="sec pad"><p>{err}</p><button className="primary" onClick={() => api.openWeb(`${site}/mod/forum/view.php?f=${id}`)}>Open in browser</button></div>
+      : !list ? <p className="muted pad">Loading…</p>
+      : !list.length ? <p className="muted pad">Nothing has been posted here yet.</p>
+      : <div className="stack">{list.map((d) => (
+        <section className="sec" key={d.id}>
+          <div className="sechead static"><span>{d.subject}</span><small>{[d.author, d.created ? when(d.created) : "", d.replies ? `${d.replies} repl${d.replies === 1 ? "y" : "ies"}` : ""].filter(Boolean).join(" · ")}</small></div>
+          {d.message && <div className="summary"><Html site={site} html={d.message} token={token} onLink={onLink} /></div>}
+        </section>))}</div>}
+  </>);
 }
 
 const norm = (s: string) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
@@ -449,7 +608,16 @@ export default function App() {
   const [stack, setStack, back, clear] = useCourseStack<api.Course>(); const [q, setQ] = useState("");
   const open_ = stack[stack.length - 1] ?? null;
   const [dir, setDir] = useState(localStorage.getItem("dlDir")); const [toast, setToast] = useState("");
+  const [offline, setOffline] = useState(!navigator.onLine);
+  const [dl, setDl] = useState<Dl | null>(null);
+  const [overlay, setOverlay] = useState<{ kind: "html" | "forum"; title: string; url?: string; id?: number } | null>(null);
   const notify = useCallback((m: string) => { setToast(m); setTimeout(() => setToast(""), 3500); }, []);
+  useEffect(() => {
+    const on = () => setOffline(false), off = () => setOffline(true);
+    window.addEventListener("online", on); window.addEventListener("offline", off);
+    return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
+  }, []);
+  useEffect(() => { const un = listen<{ id: string; done: number; total: number | null }>("download-progress", (e) => setDl((cur) => (cur && cur.id === e.payload.id ? { ...cur, done: e.payload.done, total: e.payload.total } : cur))); return () => { un.then((f) => f()); }; }, []);
   const refresh = () => api.getSession().then(setSession);
   useEffect(() => { refresh(); }, []);
   useEffect(() => { api.setNoteHandler(notify); }, [notify]);
@@ -462,10 +630,28 @@ export default function App() {
   const [filter, setFilter] = useState<api.Filter>("all"); const [menu, setMenu] = useState<number | null>(null); const [loading, setLoading] = useState(false);
   const load = useCallback((f: api.Filter) => {
     setLoading(true);
-    return api.listCourses(f).then(setCourses).catch((e) => notify(String(e))).finally(() => setLoading(false));
+    const cached = cacheGet<api.Course[]>("courses:" + f);
+    if (!navigator.onLine && cached) { setCourses(cached); setLoading(false); return Promise.resolve(); }
+    return api.listCourses(f)
+      .then((cs) => { setCourses(cs); cacheSet("courses:" + f, cs); setOffline(false); })
+      .catch((e) => {
+        if (authError(e)) { api.logout(); setSession(null); cacheClear(); setCourses([]); }
+        else if (cached) { setCourses(cached); setOffline(true); }
+        else notify("Couldn't load courses: " + e);
+      })
+      .finally(() => setLoading(false));
   }, [notify]);
   useEffect(() => { if (session) load(filter); }, [session, filter]);
-  useEffect(() => { if (session) api.siteInfo().then(setInfo).catch(() => { api.logout(); setSession(null); }); }, [session]);
+  useEffect(() => {
+    if (!session) return;
+    const cached = cacheGet<api.Info>("info");
+    if (!navigator.onLine && cached) { setInfo(cached); return; }
+    api.siteInfo().then((i) => { setInfo(i); cacheSet("info", i); })
+      .catch((e) => {
+        if (authError(e)) { api.logout(); setSession(null); setInfo(null); cacheClear(); }
+        else { setOffline(true); if (cached) setInfo(cached); }
+      });
+  }, [session]);
   const act = async (c: api.Course, what: "fav" | "hide") => {
     setMenu(null);
     try {
@@ -488,13 +674,13 @@ export default function App() {
     let u: URL; try { u = new URL(href, session.site + "/"); } catch { return; }
     if (!/^https?:$/.test(u.protocol)) return;
     const id = u.origin === new URL(session.site).origin && u.pathname.endsWith("/course/view.php") ? Number(u.searchParams.get("id")) : 0;
-    if (id) openCourseById(id); else api.openWeb(u.toString());
+    if (id) { setOverlay(null); openCourseById(id); } else api.openWeb(u.toString());
   };
   const pick = async () => { const p = await open({ directory: true, title: "Choose download folder" }); if (typeof p === "string") { localStorage.setItem("dlDir", p); setDir(p); return p; } return null; };
   const ensureDir = async () => dir ?? "";   // no prompt here: choose the folder in Settings (default: Downloads/Zenith)
   const resetDir = () => { localStorage.removeItem("dlDir"); setDir(null); };
 
-  const signOut = () => api.logout().then(() => { clear(); refresh(); });
+  const signOut = () => api.logout().then(() => { clear(); cacheClear(); setOverlay(null); setInfo(null); setCourses([]); refresh(); });
   if (session === undefined) return null;
   if (!session) return setup
     ? <Setup theme={theme} setTheme={setTheme} contrast={contrast} setContrast={setContrast} onDone={finishSetup} />
@@ -505,19 +691,25 @@ export default function App() {
       <aside>
         <div className="brand">Zenith</div>
         <nav>
-          <button className={!explore && !settingsOpen ? "on" : ""} onClick={() => { setExplore(false); setSettingsOpen(false); clear(); }}><Icon n="book" />My courses</button>
-          <button className={explore ? "on" : ""} onClick={() => { setExplore(true); setSettingsOpen(false); clear(); }}><Icon n="search" />Explore</button>
-          <button className={settingsOpen ? "on" : ""} onClick={() => { setSettingsOpen(true); setExplore(false); clear(); }}><Icon n="sliders" />Settings</button>
+          <button className={!explore && !settingsOpen ? "on" : ""} onClick={() => { setExplore(false); setSettingsOpen(false); setOverlay(null); clear(); }}><Icon n="book" />My courses</button>
+          <button className={explore ? "on" : ""} onClick={() => { setExplore(true); setSettingsOpen(false); setOverlay(null); clear(); }}><Icon n="search" />Explore</button>
+          <button className={settingsOpen ? "on" : ""} onClick={() => { setSettingsOpen(true); setExplore(false); setOverlay(null); clear(); }}><Icon n="sliders" />Settings</button>
         </nav>
         <div className="grow" />
         <div className="user"><div className="avatar">{initials(info?.fullname ?? "?")}</div><span className="grow">{info?.fullname}</span>
           <button className="icon" title="Sign out" onClick={signOut}><Icon n="out" /></button></div>
       </aside>
       <main>
-        {open_ ? (<>
+        {offline && <div className="offline" role="status"><Icon n="wifi" s={16} /><span>You're offline. Showing courses and files already saved on this device.</span></div>}
+        {overlay ? (
+          overlay.kind === "forum"
+            ? <ForumPage title={overlay.title} id={overlay.id!} site={session.site} token={session.token} onLink={handleLink} onClose={() => setOverlay(null)} />
+            : <HtmlPage title={overlay.title} url={overlay.url!} site={session.site} token={session.token} onLink={handleLink} onClose={() => setOverlay(null)} />
+        ) : open_ ? (<>
           <div className="bar"><button className="icon" onClick={back}><Icon n="back" /></button><h1>{open_.fullname}</h1></div>
           <div className="banner" style={{ background: tone(open_.id) }}>{open_.shortname}</div>
-          <CourseView key={open_.id} dlMode={dlMode} c={open_} site={session.site} token={session.token} ensureDir={ensureDir} notify={notify} onLink={handleLink} />
+          <CourseView key={open_.id} dlMode={dlMode} c={open_} site={session.site} token={session.token} uid={info?.userid ?? 0} ensureDir={ensureDir} notify={notify} onLink={handleLink}
+            onHtml={(title, url) => setOverlay({ kind: "html", title, url })} onForum={(title, id) => setOverlay({ kind: "forum", title, id })} setDl={setDl} />
         </>) : explore ? (
           <Explore site={session.site} token={session.token} enrolled={enrolledIds} notify={notify} onLink={handleLink}
             onJoined={(c) => { setExplore(false); setStack([c]); load(filter); }} />
@@ -557,7 +749,10 @@ export default function App() {
           <button className="primary sm" onClick={() => api.openExternal(update.url)}>Download</button>
           <button className="icon" title="Skip this version" onClick={() => { localStorage.setItem("skipVersion", update.version); setUpdate(null); }}><Icon n="x" /></button>
         </div>)}
-      {toast && <div className="toast">{toast}</div>}
+      {(toast || dl) && <div className="toast">{toast || dl?.name}
+        {dl && <div className={dl.total ? "dlbar" : "dlbar indet"}>{dl.total ? <i style={{ width: `${Math.min(100, Math.round((dl.done / dl.total) * 100))}%` }} /> : <i />}</div>}
+        {dl && <span className="dltext">{size(dl.done)}{dl.total ? ` of ${size(dl.total)}` : ""}</span>}
+      </div>}
     </div>
   );
 }

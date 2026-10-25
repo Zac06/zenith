@@ -292,7 +292,13 @@ async fn ws_call(
     form.insert("wsfunction".into(), function);
     form.insert("moodlewsrestformat".into(), "json".into());
     form.insert("moodlewssettingfilter".into(), "true".into()); // resolves multilingual names/summaries
-    let v: Value = reqwest::Client::new()
+    // file URLs must point at the token-authenticated endpoint; plain pluginfile.php needs a browser session
+    form.insert("moodlewssettingfileurl".into(), "true".into());
+    let v: Value = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?
         .post(format!("{}/webservice/rest/server.php", s.site))
         .form(&form)
         .send()
@@ -346,6 +352,30 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Records a saved file. `only_new` keeps the original date when a copy was already on disk.
+fn track(app: &AppHandle, path: &str, course: &str, name: &str, only_new: bool) {
+    let mut m = load_manifest(app);
+    if only_new && m.iter().any(|e| e.path == path) {
+        return;
+    }
+    m.retain(|e| e.path != path);
+    let size = std::fs::metadata(path).map(|md| md.len()).unwrap_or(0);
+    m.push(DlEntry {
+        path: path.to_string(),
+        course: course.to_string(),
+        name: name.to_string(),
+        size,
+        at: now_secs(),
+    });
+    save_manifest(app, &m);
+}
+fn emit_progress(app: &AppHandle, id: &str, done: u64, total: Option<u64>) {
+    let _ = app.emit(
+        "download-progress",
+        serde_json::json!({ "id": id, "done": done, "total": total }),
+    );
 }
 
 /// Opens a file path or web URL with the OS default handler.
@@ -452,6 +482,7 @@ fn default_download_dir(app: AppHandle) -> Result<String, String> {
 async fn download_file(
     app: AppHandle,
     state: State<'_, AppState>,
+    id: String,
     url: String,
     dir: String,
     subdir: String,
@@ -503,18 +534,7 @@ async fn download_file(
             });
         if up_to_date {
             // adopt a saved copy we don't track yet, so it can be re-downloaded or cleared later
-            let mut m = load_manifest(&app);
-            if !m.iter().any(|e| e.path == p) {
-                let size = std::fs::metadata(&path).map(|md| md.len()).unwrap_or(0);
-                m.push(DlEntry {
-                    path: p.clone(),
-                    course: subdir.clone(),
-                    name: filename.clone(),
-                    size,
-                    at: now_secs(),
-                });
-                save_manifest(&app, &m);
-            }
+            track(&app, &p, &subdir, &filename, true);
             launch(&app, &p)?;
             return Ok(serde_json::json!({ "path": p, "reused": true }));
         }
@@ -522,53 +542,88 @@ async fn download_file(
 
     let sep = if url.contains('?') { '&' } else { '?' };
     // no total timeout (big files on slow links are fine); only a stalled connection or transfer gives up
-    let resp = reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
         .read_timeout(std::time::Duration::from_secs(60))
         .build()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    let resp = match client
         .get(format!("{url}{sep}token={}", s.token))
         .send()
         .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            // without a connection, a copy saved earlier is still useful
+            if path.is_file() {
+                track(&app, &p, &subdir, &filename, true);
+                launch(&app, &p)?;
+                return Ok(serde_json::json!({ "path": p, "reused": true }));
+            }
+            return Err(e.to_string());
+        }
+    };
+    let mut resp = resp.error_for_status().map_err(|e| e.to_string())?;
     let is_json = resp
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map_or(false, |t| t.starts_with("application/json"));
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
     // Moodle can answer 200 with a JSON error instead of the file; don't save that as the file
     if is_json && !filename.to_lowercase().ends_with(".json") {
+        let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
         let msg = serde_json::from_slice::<Value>(&bytes)
             .ok()
             .and_then(|v| v["message"].as_str().or(v["error"].as_str()).map(String::from))
             .unwrap_or_else(|| "Moodle returned an error instead of the file".into());
         return Err(msg);
     }
+    let total = resp.content_length();
+    emit_progress(&app, &id, 0, total);
     // write beside the target and rename, so an interrupted write never leaves a truncated "saved" file
     let mut part = path.clone().into_os_string();
     part.push(".part");
     let part = std::path::PathBuf::from(part);
-    std::fs::write(&part, &bytes)
-        .and_then(|_| std::fs::rename(&part, &path))
-        .map_err(|e| {
-            let _ = std::fs::remove_file(&part);
-            e.to_string()
-        })?;
+    let mut file = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+    use std::io::Write;
+    let mut done = 0u64;
+    let mut last = std::time::Instant::now();
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                if let Err(e) = file.write_all(&chunk) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&part);
+                    return Err(e.to_string());
+                }
+                done += chunk.len() as u64;
+                // a chunk is small; only report often enough for a readable bar
+                if last.elapsed() >= std::time::Duration::from_millis(150) || Some(done) == total {
+                    emit_progress(&app, &id, done, total);
+                    last = std::time::Instant::now();
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                drop(file);
+                let _ = std::fs::remove_file(&part);
+                return Err(e.to_string());
+            }
+        }
+    }
+    if let Err(e) = file.flush() {
+        let _ = std::fs::remove_file(&part);
+        return Err(e.to_string());
+    }
+    drop(file);
+    std::fs::rename(&part, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&part);
+        e.to_string()
+    })?;
+    emit_progress(&app, &id, done, total);
 
     // remember what we saved, so "clear downloads" only ever touches our own files
-    let mut m = load_manifest(&app);
-    m.retain(|e| e.path != p);
-    m.push(DlEntry {
-        path: p.clone(),
-        course: subdir,
-        name: filename,
-        size: bytes.len() as u64,
-        at: now_secs(),
-    });
-    save_manifest(&app, &m);
+    track(&app, &p, &subdir, &filename, false);
 
     launch(&app, &p)?;
     Ok(serde_json::json!({ "path": p, "reused": false }))
@@ -613,6 +668,104 @@ fn delete_downloads(app: AppHandle, paths: Option<Vec<String>>) -> u64 {
 #[tauri::command]
 fn open_local(app: AppHandle, path: String) -> Result<(), String> {
     launch(&app, &path)
+}
+
+/// Fetches a Moodle-hosted HTML resource with the token, for the in-app viewer.
+#[tauri::command]
+async fn fetch_content(state: State<'_, AppState>, url: String) -> Result<String, String> {
+    let s = state
+        .session
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Not logged in")?;
+    if !same_origin(&s.site, &url) {
+        return Err("Refusing to load content from a different host".into());
+    }
+    let mut u = reqwest::Url::parse(&url).map_err(|e| e.to_string())?;
+    u.query_pairs_mut().append_pair("token", &s.token);
+    let resp = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(45))
+        .build()
+        .map_err(|e| e.to_string())?
+        .get(u)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    // 4 MB is far beyond a normal resource page and keeps a wrong file from freezing the UI
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err("That page is too large to show in the app".into());
+    }
+    String::from_utf8(bytes.to_vec()).map_err(|_| "That file is not readable HTML".into())
+}
+
+/// Uploads one local file into the user's Moodle draft area and returns the draft item id (reuse it for more files).
+#[tauri::command]
+async fn upload_draft_file(
+    state: State<'_, AppState>,
+    path: String,
+    itemid: u64,
+    userid: u64,
+) -> Result<u64, String> {
+    let s = state
+        .session
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Not logged in")?;
+    let p = std::path::Path::new(&path);
+    let name = p
+        .file_name()
+        .ok_or("That is not a file")?
+        .to_string_lossy()
+        .to_string();
+    let bytes = std::fs::read(p).map_err(|e| format!("Can't read {name}: {e}"))?;
+    let mut form = HashMap::new();
+    form.insert("wstoken", s.token.clone());
+    form.insert("wsfunction", "core_files_upload".into());
+    form.insert("moodlewsrestformat", "json".into());
+    form.insert("component", "user".into());
+    form.insert("filearea", "draft".into());
+    form.insert("itemid", itemid.to_string());
+    form.insert("filepath", "/".into());
+    form.insert("filename", name);
+    form.insert("filecontent", STANDARD.encode(&bytes));
+    form.insert("contextlevel", "user".into());
+    form.insert("instanceid", userid.to_string());
+    let v: Value = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| e.to_string())?
+        .post(format!("{}/webservice/rest/server.php", s.site))
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(msg) = v.get("message").and_then(|m| m.as_str()) {
+        if v.get("exception").is_some() {
+            return Err(msg.to_string());
+        }
+    }
+    if let Some(msg) = v
+        .get("warnings")
+        .and_then(|w| w.get(0))
+        .and_then(|w| w.get("message"))
+        .and_then(|m| m.as_str())
+    {
+        return Err(msg.to_string());
+    }
+    v.get("itemid")
+        .and_then(|x| x.as_u64())
+        .or_else(|| v.as_u64())
+        .ok_or_else(|| "Moodle did not accept the file".into())
 }
 
 /// Opens a URL in the system browser. For same-site URLs it first asks Moodle for a one-time
@@ -838,7 +991,9 @@ pub fn run() {
             check_update,
             list_downloads,
             delete_downloads,
-            open_local
+            open_local,
+            fetch_content,
+            upload_draft_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running Zenith");
