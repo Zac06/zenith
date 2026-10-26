@@ -5,7 +5,14 @@ import { fake } from "./demo";
 let demo = false;
 export const init = () => Promise.all([real<boolean>("screenshot_mode"), real<boolean>("is_mobile")])
   .then(([d, m]) => { demo = d; if (m) document.documentElement.dataset.mobile = ""; }).catch(() => {});
-const invoke = <T,>(cmd: string, args?: Record<string, unknown>): Promise<T> => (demo ? (fake(cmd, args) as Promise<T>) : real<T>(cmd, args));
+// The Android WebView keeps navigator.onLine true with no internet, so also remember when a call fails like a dead network.
+export const net = { down: false };
+export const isOffline = () => net.down || !navigator.onLine;
+let onNet: () => void = () => {};
+export const setNetHandler = (f: () => void) => { onNet = f; };
+const NETERR = /error sending request|timed out|dns error|connection (refused|reset|closed)|network is unreachable/i;
+const invoke = <T,>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
+  (demo ? (fake(cmd, args) as Promise<T>) : real<T>(cmd, args)).catch((e) => { if (NETERR.test(String(e))) { net.down = true; onNet(); } throw e; });
 
 export type Session = { site: string; token: string };
 export type Info = { userid: number; fullname: string; sitename: string };
@@ -24,6 +31,8 @@ export const getSession = () => invoke<Session | null>("get_session");
 export const logout = () => invoke<void>("logout");
 
 const ws = <T,>(fn: string, params: Record<string, string> = {}) => invoke<T>("ws_call", { function: fn, params });
+// demo mode answers null, which must not read as "offline"
+export const reachable = () => invoke<boolean | null>("reachable").then((v) => { net.down = v === false; return v !== false; });
 export const siteInfo = () => ws<Info>("core_webservice_get_site_info");
 export const listCourses = async (classification: Filter) =>
   (await ws<{ courses: Course[] }>("core_course_get_enrolled_courses_by_timeline_classification",

@@ -275,6 +275,15 @@ async fn login_password(
 }
 
 /// Generic Moodle web-service call. Nested params use Moodle's flat syntax, e.g. "courseids[0]".
+/// navigator.onLine and the online/offline events are unreliable in the Android WebView, so ask the network:
+/// any HTTP answer from the site counts as online.
+#[tauri::command]
+async fn reachable(state: State<'_, AppState>) -> Result<bool, String> {
+    let Some(s) = state.session.lock().unwrap().clone() else { return Ok(true) };
+    let c = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().map_err(|e| e.to_string())?;
+    Ok(c.head(&s.site).send().await.is_ok())
+}
+
 #[tauri::command]
 async fn ws_call(
     state: State<'_, AppState>,
@@ -976,6 +985,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            reachable,
             resolve_site,
             start_sso,
             login_password,

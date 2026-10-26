@@ -174,6 +174,9 @@ function AssignRow({ a, site, token, uid, onLink, getFile }: { a: api.Assign; si
       setPicked([...picked, ...paths]);
     } catch (e) { setMsg(String(e)); }
   };
+  const dirty = picked.length > 0 || (pluginOn(a, "onlinetext") && text !== loadedText);
+  const done = st?.submission === "submitted";
+  const idle = !dirty && (!drafts || done);   // nothing to save and nothing left to submit
   const send = async (graded: boolean) => {
     if ((graded || !drafts) && needsAgree) { setMsg("Accept the submission statement before submitting."); return; }
     if (!pluginOn(a, "onlinetext") && !picked.length && !st?.files?.length) { setMsg("Choose at least one file to submit."); return; }
@@ -182,11 +185,13 @@ function AssignRow({ a, site, token, uid, onLink, getFile }: { a: api.Assign; si
     try {
       let itemid: number | undefined;
       if (picked.length) { itemid = 0; for (const path of picked) itemid = await api.uploadDraftFile(path, itemid, uid); }
-      await api.saveSubmission(a.id, {
+      // mod_assign_save_submission needs plugindata, so calling it with nothing changed is what raised [invalidparameter]
+      if (dirty) await api.saveSubmission(a.id, {
         ...(pluginOn(a, "onlinetext") && text !== loadedText ? { text } : {}),
         ...(itemid !== undefined ? { fileItemId: itemid } : {}),
       });
-      if (submitting) await api.submitForGrading(a.id);
+      // without drafts, saving already submits; with drafts a separate "submit for grading" step is needed
+      if (graded && !done) await api.submitForGrading(a.id);
       await load(); setPicked([]);
       setMsg(submitting ? "Submitted for grading." : "Saved.");
     } catch (e) { setMsg(String(e).replace(/^Error: /, "")); }
@@ -200,9 +205,13 @@ function AssignRow({ a, site, token, uid, onLink, getFile }: { a: api.Assign; si
     </button>
     {expanded && <div className="summary">
       {hasContent(a.intro) && <Html site={site} html={a.intro!} token={token} onLink={onLink} />}
-      <p>{err ? "Status unavailable: " + err : st ? SUBMISSION[st.submission] ?? st.submission : "Loading status…"}{st?.grade ? ` · Grade ${st.grade}` : ""}</p>
+      {!!a.introattachments?.length && <>
+        <h4 className="subhead">Files from your teacher</h4>
+        <div className="joinrow">{a.introattachments.map((f) => <button className="btn" key={f.filename} onClick={() => getFile({ ...f, type: "file" })}>{f.filename}</button>)}</div>
+      </>}
+      <h4 className="subhead">Your submission</h4>
+      <p className="status">{err ? "Status unavailable: " + err : st ? <span className={done ? "chip" : "chip off"}>{SUBMISSION[st.submission] ?? st.submission}</span> : "Loading status…"}{st?.grade ? <span> Grade {st.grade}</span> : null}</p>
       {!!st?.files?.length && <div className="joinrow">{st.files.map((f) => <button className="btn" key={f.fileurl} onClick={() => getFile({ ...f, type: "file" })}>{f.filename}</button>)}</div>}
-      {(a.introattachments ?? []).length > 0 && <div className="joinrow">{(a.introattachments ?? []).map((f) => <button className="btn" key={f.filename} onClick={() => getFile({ ...f, type: "file" })}>{f.filename}</button>)}</div>}
       {!locked && canEdit && st && (pluginOn(a, "file") || pluginOn(a, "onlinetext")) && (
         <div className="submit">
           {pluginOn(a, "onlinetext") && <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Write your answer…" rows={5} />}
@@ -214,9 +223,9 @@ function AssignRow({ a, site, token, uid, onLink, getFile }: { a: api.Assign; si
           {a.requiresubmissionstatement === 1 && <label className="agree"><input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} /> This assignment requires me to accept its submission statement.</label>}
           <div className="joinrow">
             {drafts && <button className="btn" disabled={saving} onClick={() => send(false)}>{saving ? "Working…" : "Save draft"}</button>}
-            <button className="primary sm" disabled={saving || needsAgree} onClick={() => send(drafts)}>{saving ? "Working…" : drafts ? "Submit for grading" : "Submit"}</button>
+            <button className="primary sm" disabled={saving || needsAgree || idle} onClick={() => send(drafts)}>{saving ? "Working…" : drafts ? "Submit for grading" : done ? "Update submission" : "Submit"}</button>
           </div>
-          {msg && <p className="muted">{msg}</p>}
+          {msg && <p className={/^(Saved|Submitted)/.test(msg) ? "muted" : "msg"}>{msg}</p>}
         </div>)}
       {!locked && <button className="btn" onClick={() => api.openWeb(`${site}/mod/assign/view.php?id=${a.cmid}`)}>Open in browser</button>}
     </div>}
@@ -230,16 +239,16 @@ function CourseView({ c, site, token, uid, ensureDir, notify, onLink, onHtml, on
   useEffect(() => {
     setSecs(null); setErr("");
     const key = "contents:" + c.id, cached = cacheGet<api.Section[]>(key);
-    if (!navigator.onLine && cached) { setSecs(cached); return; }
+    if (api.isOffline() && cached) { setSecs(cached); return; }
     api.courseContents(c.id).then((s) => { setSecs(s); cacheSet(key, s); })
-      .catch((e) => { if (cached && !authError(e)) setSecs(cached); else setErr(navigator.onLine || authError(e) ? String(e) : "You're offline and this course hasn't been opened in the app before."); });
+      .catch((e) => { if (cached && !authError(e)) setSecs(cached); else setErr(!api.isOffline() || authError(e) ? String(e) : "You're offline and this course hasn't been opened in the app before."); });
   }, [c.id]);
   const course = c.shortname || c.fullname;
   const [assigns, setAssigns] = useState<Map<number, api.Assign>>(new Map());   // by course-module id; empty if the site hides the function
   useEffect(() => {
     setAssigns(new Map());
     const key = "assigns:" + c.id, cached = cacheGet<api.Assign[]>(key);
-    if (!navigator.onLine && cached) { setAssigns(new Map(cached.map((a) => [a.cmid, a]))); return; }
+    if (api.isOffline() && cached) { setAssigns(new Map(cached.map((a) => [a.cmid, a]))); return; }
     api.courseAssignments(c.id).then((l) => { setAssigns(new Map(l.map((a) => [a.cmid, a]))); cacheSet(key, l); })
       .catch(() => { if (cached) setAssigns(new Map(cached.map((a) => [a.cmid, a]))); });
   }, [c.id]);
@@ -251,7 +260,7 @@ function CourseView({ c, site, token, uid, ensureDir, notify, onLink, onHtml, on
     setMenu(null);
     // a Moodle-hosted HTML resource is a page, not a bare file: show it in the app with its pictures and links intact
     if (isHtmlFile(f) && sameOrigin(site, f.fileurl)) { onHtml(f.filename, f.fileurl); return; }
-    if (!navigator.onLine && !saved.has(course + "::" + f.filename)) { notify(f.filename + " isn't downloaded yet — connect to the internet to get it."); return; }
+    if (api.isOffline() && !saved.has(course + "::" + f.filename)) { notify(f.filename + " isn't downloaded yet — connect to the internet to get it."); return; }
     const dir = (await ensureDir()) ?? "";   // empty = default folder; changing it is done in Settings
     notify((force ? "Downloading " : "Opening ") + f.filename + "…");
     const id = Date.now() + "-" + Math.random().toString(36).slice(2);
@@ -259,11 +268,11 @@ function CourseView({ c, site, token, uid, ensureDir, notify, onLink, onHtml, on
     try {
       const r = await api.download(id, f.fileurl, dir, course, f.filename, dlMode, f.timemodified, force);
       notify(r.reused ? "Opened saved copy of " + f.filename : "Downloaded " + f.filename); refreshSaved();
-    } catch (e) { notify("Download failed: " + e); }
+    } catch (e) { notify("Download failed: " + (api.isOffline() ? "you're offline." : e)); }
     finally { setTimeout(() => setDl((d) => (d?.id === id ? null : d)), 400); }
   };
   if (err) return (
-    <div className="sec pad"><p>{navigator.onLine ? "This course can't be shown in the app (you may not be enrolled)." : "You're offline and this course hasn't been saved yet."}</p><small>{err}</small><br />
+    <div className="sec pad"><p>{!api.isOffline() ? "This course can't be shown in the app (you may not be enrolled)." : "You're offline and this course hasn't been saved yet."}</p>{!api.isOffline() && <small>{err}</small>}<br />
       <button className="primary" onClick={() => api.openWeb(`${site}/course/view.php?id=${c.id}`)}>Open in browser</button></div>);
   if (!secs) return <div className="muted pad">Loading course…</div>;
   // Moodle 4.5+ subsections: the activity sits in its parent section, its content is an extra
@@ -330,9 +339,9 @@ function HtmlPage({ title, url, site, token, onLink, onClose }: { title: string;
   const [body, setBody] = useState<string | null>(null); const [err, setErr] = useState("");
   useEffect(() => {
     const key = "html:" + url, cached = cacheGet<string>(key);
-    if (!navigator.onLine && cached !== undefined) { setBody(cached); return; }
+    if (api.isOffline() && cached !== undefined) { setBody(cached); return; }
     api.fetchContent(url).then((h) => { setBody(h); cacheSet(key, h); })
-      .catch((e) => { if (cached !== undefined) setBody(cached); else setErr(navigator.onLine ? String(e) : "You're offline and this page hasn't been opened before."); });
+      .catch((e) => { if (cached !== undefined) setBody(cached); else setErr(!api.isOffline() ? String(e) : "You're offline and this page hasn't been opened before."); });
   }, [url]);
   const html = useMemo(() => (body === null ? "" : absolutise(body, url)), [body, url]);
   return (<>
@@ -347,9 +356,9 @@ function ForumPage({ title, id, site, token, onLink, onClose }: { title: string;
   const [list, setList] = useState<api.Discussion[] | null>(null); const [err, setErr] = useState("");
   useEffect(() => {
     const key = "forum:" + id, cached = cacheGet<api.Discussion[]>(key);
-    if (!navigator.onLine && cached) { setList(cached); return; }
+    if (api.isOffline() && cached) { setList(cached); return; }
     api.forumDiscussions(id).then((d) => { setList(d); cacheSet(key, d); })
-      .catch((e) => { if (cached) setList(cached); else setErr(navigator.onLine ? String(e) : "You're offline and these announcements haven't been opened before."); });
+      .catch((e) => { if (cached) setList(cached); else setErr(!api.isOffline() ? String(e) : "You're offline and these announcements haven't been opened before."); });
   }, [id]);
   return (<>
     <div className="bar"><button className="icon" onClick={onClose}><Icon n="back" /></button><h1>{title}</h1></div>
@@ -608,14 +617,19 @@ export default function App() {
   const [stack, setStack, back, clear] = useCourseStack<api.Course>(); const [q, setQ] = useState("");
   const open_ = stack[stack.length - 1] ?? null;
   const [dir, setDir] = useState(localStorage.getItem("dlDir")); const [toast, setToast] = useState("");
-  const [offline, setOffline] = useState(!navigator.onLine);
+  const [offline, setOffline] = useState(api.isOffline());
   const [dl, setDl] = useState<Dl | null>(null);
   const [overlay, setOverlay] = useState<{ kind: "html" | "forum"; title: string; url?: string; id?: number } | null>(null);
   const notify = useCallback((m: string) => { setToast(m); setTimeout(() => setToast(""), 3500); }, []);
   useEffect(() => {
-    const on = () => setOffline(false), off = () => setOffline(true);
-    window.addEventListener("online", on); window.addEventListener("offline", off);
-    return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
+    // the WebView's own online flag can stay stale on Android, so poll the site as well (and on focus / network events)
+    let live = true;
+    const check = () => api.reachable().then((ok) => live && setOffline(!ok)).catch(() => {});
+    const off = () => setOffline(true);
+    api.setNetHandler(() => setOffline(true));
+    check(); const t = setInterval(check, 10000);
+    window.addEventListener("online", check); window.addEventListener("offline", off); window.addEventListener("focus", check);
+    return () => { live = false; clearInterval(t); window.removeEventListener("online", check); window.removeEventListener("offline", off); window.removeEventListener("focus", check); };
   }, []);
   useEffect(() => { const un = listen<{ id: string; done: number; total: number | null }>("download-progress", (e) => setDl((cur) => (cur && cur.id === e.payload.id ? { ...cur, done: e.payload.done, total: e.payload.total } : cur))); return () => { un.then((f) => f()); }; }, []);
   const refresh = () => api.getSession().then(setSession);
@@ -631,7 +645,7 @@ export default function App() {
   const load = useCallback((f: api.Filter) => {
     setLoading(true);
     const cached = cacheGet<api.Course[]>("courses:" + f);
-    if (!navigator.onLine && cached) { setCourses(cached); setLoading(false); return Promise.resolve(); }
+    if (api.isOffline() && cached) { setCourses(cached); setLoading(false); return Promise.resolve(); }
     return api.listCourses(f)
       .then((cs) => { setCourses(cs); cacheSet("courses:" + f, cs); setOffline(false); })
       .catch((e) => {
@@ -645,7 +659,7 @@ export default function App() {
   useEffect(() => {
     if (!session) return;
     const cached = cacheGet<api.Info>("info");
-    if (!navigator.onLine && cached) { setInfo(cached); return; }
+    if (api.isOffline() && cached) { setInfo(cached); return; }
     api.siteInfo().then((i) => { setInfo(i); cacheSet("info", i); })
       .catch((e) => {
         if (authError(e)) { api.logout(); setSession(null); setInfo(null); cacheClear(); }
