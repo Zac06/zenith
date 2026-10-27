@@ -1,4 +1,4 @@
-<img src="docs/icon.png" width="96" alt="Zenith logo">
+<p align="center"><img src="docs/icon.png" width="96" alt="Zenith logo"></p>
 
 # Zenith
 
@@ -8,9 +8,11 @@ Runs on **Linux, Windows, macOS and Android**. iOS is not supported yet (see [`M
 
 Download page: <https://zac06.github.io/zenith/> (source in [`docs/`](docs), published with GitHub Pages).
 
+Codebase documentation: <https://deepwiki.com/Zac06/zenith> (generated from this repository).
+
 ## Screenshots
 
-![Zenith on a laptop and on an Android phone](docs/mockup.png)
+<p align="center"><img src="docs/mockup.png" alt="Zenith on a laptop and on an Android phone"></p>
 
 ## Features
 
