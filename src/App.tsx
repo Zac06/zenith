@@ -98,7 +98,7 @@ function Login({ onDone }: { onDone: () => void }) {
           <button className="primary" disabled={busy || !url} onClick={connect}>{busy ? "Connecting…" : "Continue"}</button>
         </>) : sso ? (<>
           <p className="muted">You'll sign in through your institution in your browser, then return here.</p>
-          <button className="primary" onClick={() => { api.startSso(site.site); setMsg("Finish signing in in your browser. You can close that tab afterwards."); }}>Sign in with your institution</button>
+          <button className="primary" onClick={() => { api.startSso(site.site, site.config.wwwroot); setMsg("Finish signing in in your browser. You can close that tab afterwards."); }}>Sign in with your institution</button>
         </>) : (<>
           <label>Username</label><input value={user} onChange={(e) => setUser(e.target.value)} />
           <label>Password</label><input type="password" value={pass} onChange={(e) => setPass(e.target.value)} />
@@ -252,8 +252,8 @@ function CourseView({ c, site, token, uid, ensureDir, notify, onLink, onHtml, on
     api.courseAssignments(c.id).then((l) => { setAssigns(new Map(l.map((a) => [a.cmid, a]))); cacheSet(key, l); })
       .catch(() => { if (cached) setAssigns(new Map(cached.map((a) => [a.cmid, a]))); });
   }, [c.id]);
-  const [saved, setSaved] = useState<Set<string>>(new Set()); const [menu, setMenu] = useState<{ f: api.FileItem; x: number; y: number } | null>(null);
-  const refreshSaved = () => api.listDownloads().then((l) => setSaved(new Set(l.map((e) => e.course + "::" + e.name)))).catch(() => {});
+  const [saved, setSaved] = useState<Map<string, string>>(new Map()); const [menu, setMenu] = useState<{ f: api.FileItem; path: string; x: number; y: number } | null>(null);
+  const refreshSaved = () => api.listDownloads().then((l) => setSaved(new Map(l.map((e) => [e.course + "::" + e.name, e.path])))).catch(() => {});
   useEffect(() => { refreshSaved(); }, []);
   useEffect(() => { const h = () => setMenu(null); window.addEventListener("click", h); return () => window.removeEventListener("click", h); }, []);
   const getFile = async (f: api.FileItem, force = false) => {
@@ -306,13 +306,14 @@ function CourseView({ c, site, token, uid, ensureDir, notify, onLink, onHtml, on
       </button>);
     const files = (m.contents ?? []).filter((f) => f.type === "file");
     if (files.length) return files.map((f) => {
-      const isSaved = saved.has(course + "::" + f.filename);
+      const savedPath = saved.get(course + "::" + f.filename);
+      const isSaved = savedPath !== undefined;
       return (
         <div className="item" role="button" key={m.id + f.filename} onClick={() => getFile(f)}>
           <span className="ico"><Icon n={modIcon(m.modname)} /></span>
           <span className="grow">{m.modname === "folder" ? `${m.name} / ${f.filename}` : m.name}<small>{f.filename} · {size(f.filesize)}{isSaved ? " · saved" : ""}</small></span>
           {isSaved
-            ? <button className="icon" title="Options" onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setMenu({ f, x: window.innerWidth - r.right, y: r.bottom + 4 }); }}><Icon n="dots" /></button>
+            ? <button className="icon" title="Options" onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setMenu({ f, path: savedPath, x: window.innerWidth - r.right, y: r.bottom + 4 }); }}><Icon n="dots" /></button>
             : <Icon n="down" />}
         </div>);
     });
@@ -331,6 +332,7 @@ function CourseView({ c, site, token, uid, ensureDir, notify, onLink, onHtml, on
       {!closed[s.id] && renderMods(s.modules)}
     </section>))}
     {menu && <div className="menu" style={{ position: "fixed", top: menu.y, right: menu.x }} onClick={(e) => e.stopPropagation()}>
+      <button className="desk" onClick={() => { setMenu(null); api.revealFile(menu.path).catch((e) => notify(String(e))); }}><Icon n="folder" s={16} />Show in folder</button>
       <button onClick={() => getFile(menu.f, true)}><Icon n="down" s={16} />Download again</button></div>}
   </div>);
 }
@@ -544,6 +546,7 @@ function Settings({ user, site, signOut, dir, pick, reset, mode, setMode, notify
             {list.map((f) => (
               <div className="setrow file" key={f.path}>
                 <div className="grow">{f.name}<small>{size(f.size)} · {new Date(f.at * 1000).toLocaleDateString()}</small></div>
+                <button className="icon desk" title="Show in folder" onClick={() => api.revealFile(f.path).catch(() => notify("That file is no longer there"))}><Icon n="folder" /></button>
                 <button className="icon" title="Open" onClick={() => api.openLocal(f.path)}><Icon n="file" /></button>
                 <button className="icon" title="Delete" onClick={() => del([f.path])}><Icon n="trash" /></button>
               </div>))}

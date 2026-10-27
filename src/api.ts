@@ -24,7 +24,7 @@ export type Module = { id: number; name: string; modname: string; instance?: num
 export type Section = { id: number; name: string; summary?: string; component?: string | null; itemid?: number | null; modules: Module[] };
 
 export const resolveSite = (input: string) => invoke<{ site: string; config: any }>("resolve_site", { input });
-export const startSso = (site: string) => invoke<void>("start_sso", { site });
+export const startSso = (site: string, wwwroot?: string) => invoke<void>("start_sso", { site, wwwroot: wwwroot ?? null });
 export const loginPassword = (site: string, username: string, password: string) =>
   invoke<void>("login_password", { site, username, password });
 export const getSession = () => invoke<Session | null>("get_session");
@@ -56,6 +56,7 @@ export const defaultDownloadDir = () => invoke<string>("default_download_dir");
 export const listDownloads = () => invoke<DlEntry[]>("list_downloads");
 export const deleteDownloads = (paths?: string[]) => invoke<number>("delete_downloads", { paths: paths ?? null });
 export const openLocal = (path: string) => invoke<void>("open_local", { path });
+export const revealFile = (path: string) => invoke<void>("reveal_file", { path });
 export const courseById = async (id: number) =>
   (await ws<{ courses: Course[] }>("core_course_get_courses_by_field", { field: "id", value: String(id) })).courses[0];
 let onNote: (m: string) => void = () => {};

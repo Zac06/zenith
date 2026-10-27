@@ -72,7 +72,7 @@ For GitHub (`.github/workflows/release.yml`, on every `v*` tag), add three repos
 - **Browser sign-in.** Android may close Zenith while the browser login is open. The login attempt is kept on disk, so the sign-in still completes when the link brings the app back.
 - **Back button.** Back goes up one level (from a course to the course list) before it leaves the app.
 - **https only.** Release builds refuse plain `http://` sites and traffic. Debug builds allow it so the dev server works.
-- **Launcher icon.** The adaptive icon is the app's `M` and bookmark, in the pine green `#1F5C4A`, so it keeps the same look under every launcher mask. The files live in `src-tauri/icons/android` and are copied into `src-tauri/gen/android/app/src/main/res`. `npx tauri icon` rewrites the first folder with a stock foreground, so after running it check the icon again (and copy it into `res`; the generated project is committed and is not refreshed by `tauri icon`).
+- **Launcher icon.** The adaptive icon is the app's `M` and bookmark, in the pine green `#1F5C4A`, so it keeps the same look under every launcher mask. The foreground is the mark alone, kept inside Android's safe zone (source: `src-tauri/icons/android/ic_launcher_foreground.svg`); the background is the green colour layer. The files live in `src-tauri/icons/android` and are copied into `src-tauri/gen/android/app/src/main/res`. `npx tauri icon` rewrites the first folder with a stock full-bleed foreground, so after running it regenerate the foreground from the SVG and copy it into `res` (the generated project is committed and is not refreshed by `tauri icon`).
 
 ## iOS
 

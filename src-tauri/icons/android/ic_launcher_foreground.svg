@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Adaptive-icon foreground: the mark only, kept inside the 66dp safe zone; the launcher draws the green background. -->
+  <g transform="translate(512 505) scale(0.82) translate(-512 -505)">
+    <path d="M212 640A332 332 0 0 1 812 640" fill="none" stroke="#7cc9a8" stroke-width="36"/>
+    <path d="M168 640H856" stroke="#eef3f0" stroke-width="36" stroke-linecap="round"/>
+    <path d="M512 528V640" stroke="#eef3f0" stroke-width="18"/>
+    <circle cx="512" cy="450" r="80" fill="#eef3f0"/>
+  </g>
+</svg>

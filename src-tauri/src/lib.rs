@@ -155,14 +155,29 @@ async fn resolve_site(input: String) -> Result<Value, String> {
             .unwrap_or("unknown error");
         return Err(format!("Site rejected the request: {msg}"));
     }
-    Ok(serde_json::json!({ "site": site, "config": first["data"] }))
+    // Use the site's canonical address: Moodle builds file URLs from $CFG->wwwroot, and the login signature is
+    // made from it too. The address the user typed may be an alias that redirects.
+    let canonical = first["data"]["httpswwwroot"]
+        .as_str()
+        .filter(|s| s.starts_with("https://"))
+        .or_else(|| {
+            first["data"]["wwwroot"]
+                .as_str()
+                .filter(|s| s.starts_with("https://"))
+        })
+        .map(|s| normalize_site(s))
+        .unwrap_or(site);
+    Ok(serde_json::json!({ "site": canonical, "config": first["data"] }))
 }
 
 #[tauri::command]
-fn start_sso(app: AppHandle, site: String) -> Result<(), String> {
+fn start_sso(app: AppHandle, site: String, wwwroot: Option<String>) -> Result<(), String> {
     require_https(&site)?;
     let passport = uuid::Uuid::new_v4().simple().to_string();
-    save_pending(&pending_dir(&app)?, &site, &passport)?;
+    // Moodle signs the callback with md5($CFG->wwwroot . $passport), which can differ from the address the user
+    // typed (www, redirects, proxy). Keep the site's own wwwroot for the signature.
+    let signature_site = wwwroot.filter(|w| !w.is_empty()).unwrap_or_else(|| site.clone());
+    save_pending(&pending_dir(&app)?, &site, &signature_site, &passport)?;
     let url = format!(
         "{site}/admin/tool/mobile/launch.php?service={SERVICE}&passport={passport}&urlscheme={SCHEME}"
     );
@@ -176,41 +191,64 @@ fn pending_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
-fn save_pending(dir: &std::path::Path, site: &str, passport: &str) -> Result<(), String> {
-    std::fs::write(dir.join("sso_pending.json"), format!("{site}\n{passport}")).map_err(|e| e.to_string())
+fn save_pending(dir: &std::path::Path, site: &str, signature_site: &str, passport: &str) -> Result<(), String> {
+    std::fs::write(
+        dir.join("sso_pending.json"),
+        format!("{site}\n{signature_site}\n{passport}"),
+    )
+    .map_err(|e| e.to_string())
 }
-/// One callback answers one attempt: reading it also forgets it.
-fn take_pending(dir: &std::path::Path) -> Option<(String, String)> {
-    let file = dir.join("sso_pending.json");
-    let text = std::fs::read_to_string(&file).ok()?;
-    let _ = std::fs::remove_file(file);
-    let (site, passport) = text.split_once('\n')?;
-    Some((site.to_string(), passport.to_string()))
+/// Reading leaves the attempt in place, so a stale callback can be followed by the real one; success clears it.
+fn read_pending(dir: &std::path::Path) -> Option<(String, String, String)> {
+    let text = std::fs::read_to_string(dir.join("sso_pending.json")).ok()?;
+    let mut lines = text.lines();
+    let site = lines.next()?.to_string();
+    let second = lines.next()?.to_string();
+    let (signature_site, passport) = match lines.next() {
+        Some(passport) => (second, passport.to_string()),
+        None => (site.clone(), second), // pending file written by an older version
+    };
+    Some((site, signature_site, passport))
+}
+fn clear_pending(dir: &std::path::Path) {
+    let _ = std::fs::remove_file(dir.join("sso_pending.json"));
+}
+
+fn callback_matches(signature: &str, site: &str, signature_site: &str, passport: &str) -> bool {
+    let expected = |base: &str| format!("{:x}", md5::compute(format!("{base}{passport}")));
+    signature == expected(signature_site) || signature == expected(site)
 }
 
 fn handle_url(app: &AppHandle, url: &str) {
     let Some(b64) = url.strip_prefix(&format!("{SCHEME}://token=")) else {
         return;
     };
-    let b64 = b64.trim_end_matches('/');
+    let b64 = b64.trim_end_matches(|c| matches!(c, '/' | '#' | '?'));
     let b64 = b64
         .replace("%3D", "=")
+        .replace("%3d", "=")
         .replace("%2B", "+")
-        .replace("%2F", "/");
+        .replace("%2b", "+")
+        .replace("%2F", "/")
+        .replace("%2f", "/")
+        .replace(' ', "+"); // a few browsers turn a literal + into a space
     let decoded = STANDARD
         .decode(b64)
         .ok()
         .and_then(|b| String::from_utf8(b).ok());
-    let pending = pending_dir(app).ok().and_then(|d| take_pending(&d));
-    let (Some(decoded), Some((site, passport))) = (decoded, pending) else {
+    let dir = pending_dir(app).ok();
+    let pending = dir.as_ref().and_then(|d| read_pending(d));
+    let (Some(decoded), Some((site, signature_site, passport))) = (decoded, pending) else {
         let _ = app.emit("sso-error", "Unexpected login callback");
         return;
     };
     let parts: Vec<&str> = decoded.split(":::").collect();
-    let expected = format!("{:x}", md5::compute(format!("{site}{passport}")));
-    if parts.len() < 2 || parts[0] != expected {
+    if parts.len() < 2 || !callback_matches(parts[0], &site, &signature_site, &passport) {
         let _ = app.emit("sso-error", "Login callback failed verification");
         return;
+    }
+    if let Some(d) = &dir {
+        clear_pending(d);
     }
     store(
         app,
@@ -679,6 +717,54 @@ fn open_local(app: AppHandle, path: String) -> Result<(), String> {
     launch(&app, &path)
 }
 
+/// Shows a saved file in the desktop's file manager. Phones have no user-visible download folder.
+#[cfg(desktop)]
+#[tauri::command]
+fn reveal_file(app: AppHandle, path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err("That file is no longer there".into());
+    }
+    #[cfg(target_os = "macos")]
+    let _ = &app;
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::{Command, Stdio};
+        Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::{Command, Stdio};
+        let _ = &app;
+        Command::new("explorer")
+            .arg(format!("/select,{path}"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let parent = p.parent().ok_or("That file has no folder")?;
+        launch(&app, &parent.to_string_lossy())
+    }
+}
+#[cfg(not(desktop))]
+#[tauri::command]
+fn reveal_file(_path: String) -> Result<(), String> {
+    Err("Not available on this device".into())
+}
+
 /// Fetches a Moodle-hosted HTML resource with the token, for the in-app viewer.
 #[tauri::command]
 async fn fetch_content(state: State<'_, AppState>, url: String) -> Result<String, String> {
@@ -1002,6 +1088,7 @@ pub fn run() {
             list_downloads,
             delete_downloads,
             open_local,
+            reveal_file,
             fetch_content,
             upload_draft_file
         ])
@@ -1011,7 +1098,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{require_https, same_origin, save_pending, take_pending};
+    use super::{callback_matches, clear_pending, read_pending, require_https, same_origin, save_pending};
     #[test]
     fn origin_check() {
         let site = "https://moodle.uni.edu/mycampus";
@@ -1026,11 +1113,24 @@ mod tests {
     fn pending_login_survives_a_restart() {
         let dir = std::env::temp_dir().join(format!("zenith-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(take_pending(&dir), None); // nothing started yet
-        save_pending(&dir, "https://moodle.uni.edu/mycampus", "abc123").unwrap();
-        assert_eq!(take_pending(&dir), Some(("https://moodle.uni.edu/mycampus".into(), "abc123".into())));
-        assert_eq!(take_pending(&dir), None); // one attempt answers one callback
+        assert_eq!(read_pending(&dir), None); // nothing started yet
+        save_pending(&dir, "https://moodle.uni.edu/mycampus", "https://moodle.uni.edu", "abc123").unwrap();
+        assert_eq!(
+            read_pending(&dir),
+            Some(("https://moodle.uni.edu/mycampus".into(), "https://moodle.uni.edu".into(), "abc123".into()))
+        );
+        clear_pending(&dir);
+        assert_eq!(read_pending(&dir), None); // one attempt answers one callback
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn callback_accepts_the_site_wwwroot() {
+        let passport = "abc123";
+        let signature = format!("{:x}", md5::compute(format!("https://canonical.example{passport}")));
+        assert!(callback_matches(&signature, "https://typed.example", "https://canonical.example", passport));
+        assert!(callback_matches(&signature, "https://canonical.example", "https://canonical.example", passport));
+        assert!(!callback_matches(&signature, "https://typed.example", "https://other.example", passport));
+        assert!(!callback_matches("not-a-signature", "https://typed.example", "https://canonical.example", passport));
     }
     #[test]
     fn https_only() {
