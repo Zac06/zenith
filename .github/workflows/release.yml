@@ -95,3 +95,24 @@ jobs:
           tag_name: ${{ github.ref_name }}
           draft: true
           files: Zenith_${{ github.ref_name }}.apk
+
+  checksums:
+    # last job, so it hashes the desktop and Android assets together
+    needs: [build, android]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hash the release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir dist
+          gh release download "$GITHUB_REF_NAME" --dir dist
+          rm -f dist/SHA256SUMS
+          (cd dist && sha256sum * > ../SHA256SUMS)
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          files: SHA256SUMS

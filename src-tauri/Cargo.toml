@@ -37,11 +37,11 @@ tauri-plugin-process = "2"
 # Android has no keyring backend (the session goes to the app's private storage instead), see `secret` in lib.rs.
 [target.'cfg(not(target_os = "android"))'.dependencies]
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
 
 # Android: the system's OpenSSL isn't available to cross-compile against, so use rustls (bundled root certificates).
 [target.'cfg(target_os = "android")'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 # opening a file in another app, and keeping the login in the Android Keystore (see MOBILE.md)
 tauri-plugin-android-native = { path = "plugins/android-native" }
 

@@ -33,6 +33,7 @@ export const startSso = (site: string, wwwroot?: string) => invoke<void>("start_
 export const loginPassword = (site: string, username: string, password: string) =>
   invoke<void>("login_password", { site, username, password });
 export const getSession = () => invoke<Session | null>("get_session");
+export const takeSsoError = () => invoke<string | null>("take_sso_error");
 export const logout = () => invoke<void>("logout");
 
 const ws = <T,>(fn: string, params: Record<string, string> = {}) => invoke<T>("ws_call", { function: fn, params });
@@ -67,7 +68,7 @@ export const courseById = async (id: number) =>
 let onNote: (m: string) => void = () => {};
 export const setNoteHandler = (f: (m: string) => void) => { onNote = f; };
 // opens in the system browser (auto-logged-in when possible); reports why auto-login was skipped
-export const openWeb = (url: string) => invoke<string | null>("open_authed", { url }).then((m) => { if (m) onNote(m); });
+export const openWeb = (url: string) => invoke<string | null>("open_authed", { url }).then((m) => onNote(m ?? ""));
 export type UpdateMode = "auto" | "ask" | "manual";
 export type UpdateInfo = { version: string; url: string; notes: string; apkUrl?: string };
 export type UpdateProgress = { done: number; total: number | null };
@@ -187,8 +188,8 @@ export const submitForGrading = async (assignmentid: number, accepted: boolean) 
   const r = await ws<any>("mod_assign_submit_for_grading", { assignmentid: String(assignmentid), acceptsubmissionstatement: accepted ? "1" : "0" });
   if (Array.isArray(r) && r.length) throw new Error(r[0]?.message ?? "Moodle refused the submission");
 };
-export const uploadDraftFile = (path: string, itemid: number, userid: number) =>
-  invoke<number>("upload_draft_file", { path, itemid, userid });
+export const uploadDraftFile = (path: string, itemid: number) =>
+  invoke<number>("upload_draft_file", { path, itemid });
 
 // A saved HTML resource, fetched with the token so it can be shown inside the app (not stripped of its pictures).
 export const fetchContent = (url: string) => invoke<string>("fetch_content", { url });

@@ -52,6 +52,8 @@ struct Session {
 struct AppState {
     session: Mutex<Option<Session>>,
     last_autologin: Mutex<Option<std::time::Instant>>,
+    // deep links handled before the page loads cannot reach a listener, so the error waits here for the login screen
+    sso_error: Mutex<Option<String>>,
 }
 
 /// Where the login session is kept: the OS keychain (Windows, macOS, iOS, Linux).
@@ -252,6 +254,11 @@ fn callback_matches(signature: &str, site: &str, signature_site: &str, passport:
     signature == expected(signature_site) || signature == expected(site)
 }
 
+fn sso_fail(app: &AppHandle, msg: &str) {
+    *app.state::<AppState>().sso_error.lock().unwrap() = Some(msg.to_string());
+    let _ = app.emit("sso-error", msg);
+}
+
 fn handle_url(app: &AppHandle, url: &str) {
     let Some(b64) = url.strip_prefix(&format!("{SCHEME}://token=")) else {
         return;
@@ -272,17 +279,18 @@ fn handle_url(app: &AppHandle, url: &str) {
     let dir = pending_dir(app).ok();
     let pending = dir.as_ref().and_then(|d| read_pending(d));
     let (Some(decoded), Some((site, signature_site, passport))) = (decoded, pending) else {
-        let _ = app.emit("sso-error", "Unexpected login callback");
+        sso_fail(app, "Unexpected login callback");
         return;
     };
     let parts: Vec<&str> = decoded.split(":::").collect();
     if parts.len() < 2 || !callback_matches(parts[0], &site, &signature_site, &passport) {
-        let _ = app.emit("sso-error", "Login callback failed verification");
+        sso_fail(app, "Login callback failed verification");
         return;
     }
     if let Some(d) = &dir {
         clear_pending(d);
     }
+    *app.state::<AppState>().sso_error.lock().unwrap() = None;
     store(
         app,
         Session {
@@ -875,7 +883,6 @@ async fn upload_draft_file(
     state: State<'_, AppState>,
     path: String,
     itemid: u64,
-    userid: u64,
 ) -> Result<u64, String> {
     let s = state
         .session
@@ -890,45 +897,47 @@ async fn upload_draft_file(
         .to_string_lossy()
         .to_string();
     let bytes = std::fs::read(p).map_err(|e| format!("Can't read {name}: {e}"))?;
-    let mut form = HashMap::new();
-    form.insert("wstoken", s.token.clone());
-    form.insert("wsfunction", "core_files_upload".into());
-    form.insert("moodlewsrestformat", "json".into());
-    form.insert("component", "user".into());
-    form.insert("filearea", "draft".into());
-    form.insert("itemid", itemid.to_string());
-    form.insert("filepath", "/".into());
-    form.insert("filename", name);
-    form.insert("filecontent", STANDARD.encode(&bytes));
-    form.insert("contextlevel", "user".into());
-    form.insert("instanceid", userid.to_string());
+    // The mobile service sets uploadfiles=1, but it does not include core_files_upload; this is Moodle's supported upload path.
+    let form = reqwest::multipart::Form::new()
+        .text("token", s.token)
+        .text("itemid", itemid.to_string())
+        .text("filepath", "/")
+        .part(
+            "file_1",
+            reqwest::multipart::Part::bytes(bytes).file_name(name),
+        );
     let v: Value = http()
-        .post(format!("{}/webservice/rest/server.php", s.site))
+        .post(format!("{}/webservice/upload.php", s.site))
         .timeout(std::time::Duration::from_secs(120))
-        .form(&form)
+        .multipart(form)
         .send()
         .await
         .map_err(net_err)?
         .json()
         .await
         .map_err(net_err)?;
-    if let Some(msg) = v.get("message").and_then(|m| m.as_str()) {
-        if v.get("exception").is_some() {
-            return Err(msg.to_string());
-        }
-    }
-    if let Some(msg) = v
-        .get("warnings")
-        .and_then(|w| w.get(0))
-        .and_then(|w| w.get("message"))
-        .and_then(|m| m.as_str())
+    uploaded_itemid(&v)
+}
+
+fn uploaded_itemid(v: &Value) -> Result<u64, String> {
+    let Some(files) = v.as_array() else {
+        return Err(v
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Moodle did not accept the file")
+            .to_string());
+    };
+    if let Some(e) = files
+        .iter()
+        .find_map(|f| f.get("error").and_then(|e| e.as_str()))
     {
-        return Err(msg.to_string());
+        return Err(e.to_string());
     }
-    v.get("itemid")
-        .and_then(|x| x.as_u64())
-        .or_else(|| v.as_u64())
-        .ok_or_else(|| "Moodle did not accept the file".into())
+    files
+        .first()
+        .and_then(|f| f.get("itemid"))
+        .and_then(|i| i.as_u64())
+        .ok_or_else(|| "Moodle did not accept the file".to_string())
 }
 
 /// Opens a URL in the system browser. For same-site URLs it first asks Moodle for a one-time
@@ -1206,6 +1215,12 @@ fn logout(app: AppHandle, state: State<AppState>) {
     secret::del(&app);
 }
 
+/// An error from a deep link handled before the login screen was listening, or null.
+#[tauri::command]
+fn take_sso_error(state: State<AppState>) -> Option<String> {
+    state.sso_error.lock().unwrap().take()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut app = tauri::Builder::default();
@@ -1258,6 +1273,7 @@ pub fn run() {
             login_password,
             ws_call,
             get_session,
+            take_sso_error,
             logout,
             download_file,
             default_download_dir,
@@ -1282,7 +1298,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{callback_matches, clear_pending, normalize_site, parse_ver, read_pending, require_https, same_origin, save_pending, RUNNABLE};
+    use super::{callback_matches, clear_pending, normalize_site, parse_ver, read_pending, require_https, same_origin, save_pending, uploaded_itemid, RUNNABLE};
     #[test]
     fn site_address_cleanup() {
         for (typed, want) in [
@@ -1320,6 +1336,22 @@ mod tests {
         assert!(!same_origin(site, "https://moodle.uni.edu@evil.com/x"));
         assert!(!same_origin(site, "http://moodle.uni.edu/x"));
         assert!(!same_origin(site, "not a url"));
+    }
+    #[test]
+    fn upload_response() {
+        use serde_json::json;
+        assert_eq!(
+            uploaded_itemid(&json!([{"itemid": 42, "filename": "a.pdf"}])),
+            Ok(42u64)
+        );
+        assert_eq!(
+            uploaded_itemid(&json!([{"itemid": 7, "error": "File already exists"}])),
+            Err("File already exists".to_string())
+        );
+        assert_eq!(
+            uploaded_itemid(&json!({"exception": "webservice_access_exception", "message": "Access control exception"})),
+            Err("Access control exception".to_string())
+        );
     }
     #[test]
     fn pending_login_survives_a_restart() {

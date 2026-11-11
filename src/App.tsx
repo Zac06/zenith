@@ -91,6 +91,7 @@ function Login({ onDone }: { onDone: () => void }) {
   const [url, setUrl] = useState(""); const [site, setSite] = useState<{ site: string; config: any } | null>(null);
   const [user, setUser] = useState(""); const [pass, setPass] = useState(""); const [msg, setMsg] = useState(""); const [busy, setBusy] = useState(false);
   useEffect(() => {
+    api.takeSsoError().then((m) => { if (m) { setMsg(m); setBusy(false); } }).catch(() => {});
     const a = listen("sso-complete", onDone); const b = listen<string>("sso-error", (e) => { setMsg(e.payload); setBusy(false); });
     return () => { a.then((f) => f()); b.then((f) => f()); };
   }, []);
@@ -138,19 +139,28 @@ const hasContent = (h?: string) => !!h && (/<(img|a)\b/i.test(h) || h.replace(/<
 
 // Teachers write this HTML. Images may only come from the Moodle site itself (or data: URIs), so a pasted remote
 // picture can't tell another server who is reading. srcset can list several URLs, so it is dropped.
+// Moodle sizes emoticons with this class and no width/height; keeping any other class would let content borrow the
+// app's own styles (for example the global `.icon` button rules).
+const EMOTICON = "emoticon";
 let htmlSite = "";
 DOMPurify.addHook("afterSanitizeAttributes", (el) => {
+  const keep = el.tagName === "IMG" && (el.getAttribute("class") ?? "").split(/\s+/).includes(EMOTICON) ? EMOTICON : "";
+  if (keep) el.setAttribute("class", keep); else el.removeAttribute("class");
   for (const a of ["src", "poster", "background"]) {
     const v = el.getAttribute(a);
     if (v && !v.startsWith("data:") && !sameOrigin(htmlSite, v)) el.removeAttribute(a);
   }
 });
+if (import.meta.env.DEV) {
+  const s = DOMPurify.sanitize('<img class="icon emoticon toast" src="/e.png">');
+  console.assert(/class="emoticon"/.test(s) && !s.includes("toast") && !s.includes("icon "), "sanitizer keeps only the emoticon class", s);
+}
 
 // Moodle HTML (section summaries, labels): sanitised, files get the token, link clicks are routed through onLink
 function Html({ html, site, token, onLink }: { html: string; site: string; token: string; onLink: (href: string) => void }) {
   const clean = useMemo(() => {
     htmlSite = site;
-    const s = DOMPurify.sanitize(html, { FORBID_ATTR: ["style", "class", "id", "srcset"], FORBID_TAGS: ["style", "form", "input", "button", "image"] });
+    const s = DOMPurify.sanitize(html, { FORBID_ATTR: ["style", "id", "srcset"], FORBID_TAGS: ["style", "form", "input", "button", "image"] });
     // tokenise and absolutise every surviving file URL (relative ones, plain /pluginfile.php and the ws endpoint)
     const doc = new DOMParser().parseFromString(s, "text/html");
     doc.querySelectorAll("[src],[poster]").forEach((el) => {
@@ -180,7 +190,7 @@ const pluginOn = (a: api.Assign, what: "file" | "onlinetext") => {
   return c?.value === "1";
 };
 
-function AssignRow({ a, site, token, uid, onLink, getFile, onSubmitted }: { a: api.Assign; site: string; token: string; uid: number; onLink: (href: string) => void; getFile: (f: api.FileItem) => void; onSubmitted?: () => void }) {
+function AssignRow({ a, site, token, onLink, getFile, onSubmitted }: { a: api.Assign; site: string; token: string; onLink: (href: string) => void; getFile: (f: api.FileItem) => void; onSubmitted?: () => void }) {
   const [expanded, setExpanded] = useState(false); const [st, setSt] = useState<api.AssignStatus | null>(null); const [err, setErr] = useState("");
   const [text, setText] = useState(""); const [loadedText, setLoadedText] = useState(""); const [picked, setPicked] = useState<string[]>([]); const [saving, setSaving] = useState(false); const [msg, setMsg] = useState(""); const [agreed, setAgreed] = useState(false);
   // Moodle returns the answer as formatted HTML; edit it as plain text and only send it back when changed,
@@ -209,7 +219,7 @@ function AssignRow({ a, site, token, uid, onLink, getFile, onSubmitted }: { a: a
     const submitting = graded || !drafts;
     try {
       let itemid: number | undefined;
-      if (picked.length) { itemid = 0; for (const path of picked) itemid = await api.uploadDraftFile(path, itemid, uid); }
+      if (picked.length) { itemid = 0; for (const path of picked) itemid = await api.uploadDraftFile(path, itemid); }
       // mod_assign_save_submission needs plugindata, so calling it with nothing changed is what raised [invalidparameter]
       if (dirty) await api.saveSubmission(a.id, {
         ...(pluginOn(a, "onlinetext") && text !== loadedText ? { text } : {}),
@@ -220,7 +230,10 @@ function AssignRow({ a, site, token, uid, onLink, getFile, onSubmitted }: { a: a
       await load(); setPicked([]);
       setMsg(submitting ? "Submitted for grading." : "Saved.");
       if (submitting) onSubmitted?.();
-    } catch (e) { setMsg(String(e).replace(/^Error: /, "")); }
+    } catch (e) {
+      const m = String(e).replace(/^Error: /, "");
+      setMsg(/accessexception/i.test(m) ? "Your Moodle site does not allow this submission from the app. Use Open in browser below." : m);
+    }
     setSaving(false);
   };
   return (<>
@@ -263,7 +276,7 @@ function AssignRow({ a, site, token, uid, onLink, getFile, onSubmitted }: { a: a
 
 type Dl = { id: string; name: string; done: number; total: number | null };
 
-function CourseView({ c, site, token, uid, dir, notify, onLink, onHtml, onForum, dlMode, setDl, onSubmitted }: { c: api.Course; site: string; token: string; uid: number; dir: string | null; notify: (m: string) => void; onLink: (href: string) => void; onHtml: (title: string, url: string) => void; onForum: (title: string, id: number) => void; dlMode: api.DlMode; setDl: React.Dispatch<React.SetStateAction<Dl | null>>; onSubmitted?: () => void }) {
+function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMode, setDl, onSubmitted }: { c: api.Course; site: string; token: string; dir: string | null; notify: (m: string) => void; onLink: (href: string) => void; onHtml: (title: string, url: string) => void; onForum: (title: string, id: number) => void; dlMode: api.DlMode; setDl: React.Dispatch<React.SetStateAction<Dl | null>>; onSubmitted?: () => void }) {
   const [secs, setSecs] = useState<api.Section[] | null>(null); const [err, setErr] = useState(""); const [closed, setClosed] = useState<Record<number, boolean>>({});
   useEffect(() => {
     setSecs(null); setErr("");
@@ -331,7 +344,7 @@ function CourseView({ c, site, token, uid, dir, notify, onLink, onHtml, onForum,
       <div className="item locked" key={m.id}><span className="ico"><Icon n="lock" /></span>
         <span className="grow">{m.name}<small>Locked</small>{m.availabilityinfo && <small>{plain(m.availabilityinfo)}</small>}</span></div>);
     const a = m.modname === "assign" ? assigns.get(m.id) : undefined;
-    if (a) return <AssignRow key={m.id} a={a} site={site} token={token} uid={uid} onLink={onLink} getFile={(f) => getFile(f, false, m.id)} onSubmitted={onSubmitted} />;
+    if (a) return <AssignRow key={m.id} a={a} site={site} token={token} onLink={onLink} getFile={(f) => getFile(f, false, m.id)} onSubmitted={onSubmitted} />;
     if (m.modname === "forum" && m.instance) return (
       <button className="item" key={m.id} onClick={() => onForum(m.name, m.instance!)}>
         <span className="ico"><Icon n="chat" /></span>
@@ -705,6 +718,7 @@ export default function App() {
   const [stack, setStack, back, clear] = useCourseStack<api.Course>(); const [q, setQ] = useState("");
   const open_ = stack[stack.length - 1] ?? null;
   const [dir, setDir] = useState(localStorage.getItem("dlDir")); const [toast, setToast] = useState("");
+  const [note, setNote] = useState("");   // auto-login warnings must survive the app being backgrounded for the browser
   const [offline, setOffline] = useState(api.isOffline());
   const offlineRef = useRef(offline); offlineRef.current = offline;
   const [tick, setTick] = useState(0);   // bumped when the connection comes back, to reload what was served from the cache
@@ -724,7 +738,7 @@ export default function App() {
   useEffect(() => { const un = listen<{ id: string; done: number; total: number | null }>("download-progress", (e) => setDl((cur) => (cur && cur.id === e.payload.id ? { ...cur, done: e.payload.done, total: e.payload.total } : cur))); return () => { un.then((f) => f()); }; }, []);
   const refresh = () => api.getSession().then(setSession);
   useEffect(() => { refresh(); }, []);
-  useEffect(() => { api.setNoteHandler(notify); }, [notify]);
+  useEffect(() => { api.setNoteHandler(setNote); }, []);
   useEffect(() => { if (session && info) api.enrolledCourses(info.userid).then((l) => setEnrolledIds(new Set(l.map((c) => c.id)))).catch(() => {}); }, [session, info]);
   const [due, setDue] = useState<Due[]>([]);
   const [dueTick, setDueTick] = useState(0);
@@ -878,6 +892,7 @@ export default function App() {
           <button className="icon" title="Sign out" onClick={signOut}><Icon n="out" /></button></div>
       </aside>
       <main>
+        {note && <div className="offline" role="alert"><Icon n="lock" s={16} /><span className="grow">{note}</span><button className="icon" title="Dismiss" onClick={() => setNote("")}><Icon n="x" s={16} /></button></div>}
         {offline && <div className="offline" role="status"><Icon n="wifi" s={16} /><span>You're offline. Showing courses and files already saved on this device.</span></div>}
         {overlay ? (
           overlay.kind === "forum"
@@ -886,7 +901,7 @@ export default function App() {
         ) : open_ ? (<>
           <div className="bar"><button className="icon" onClick={back}><Icon n="back" /></button><h1>{open_.fullname}</h1></div>
           <div className="banner" style={{ background: tone(open_.id) }}>{open_.shortname}</div>
-          <CourseView key={open_.id} dlMode={dlMode} c={open_} site={session.site} token={session.token} uid={info?.userid ?? 0} dir={dir} notify={notify} onLink={handleLink}
+          <CourseView key={open_.id} dlMode={dlMode} c={open_} site={session.site} token={session.token} dir={dir} notify={notify} onLink={handleLink}
             onHtml={(title, url) => setOverlay({ kind: "html", title, url })} onForum={(title, id) => setOverlay({ kind: "forum", title, id })} setDl={setDl} onSubmitted={() => setDueTick((n) => n + 1)} />
         </>) : explore ? (
           <Explore site={session.site} token={session.token} enrolled={enrolledIds} notify={notify} onLink={handleLink}

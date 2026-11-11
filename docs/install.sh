@@ -16,7 +16,25 @@ tag=${tag##*/}
 ver=${tag#v}
 base="https://github.com/zac06/zenith/releases/download/$tag"
 
-# shortcut: no checksum check; release artifacts only carry updater signatures
+# Checks the download against the SHA256SUMS asset the release job publishes.
+verify() {
+  res=$(curl -sSL -w '\n%{http_code}' "$base/SHA256SUMS" 2>/dev/null || true)
+  code=$(printf '%s\n' "$res" | tail -n 1)
+  if [ "$code" = "404" ]; then
+    # shortcut: v0.2.5 shipped without SHA256SUMS; refuse instead once every supported release has one
+    say "Warning: this release publishes no SHA256SUMS, so the download was not verified."
+    return 0
+  fi
+  [ "$code" = "200" ] || { say "Could not download SHA256SUMS (HTTP $code)." >&2; return 1; }
+  want=$(printf '%s\n' "$res" | sed '$d' | awk -v f="$1" '$2 == f { print $1; exit }')
+  if [ -z "$want" ]; then say "SHA256SUMS has no entry for $1." >&2; return 1; fi
+  if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum "$2"); else got=$(shasum -a 256 "$2"); fi
+  if [ "${got%% *}" != "$want" ]; then
+    say "Checksum mismatch for $1: the download is corrupted or was tampered with." >&2
+    return 1
+  fi
+  say "Checksum verified."
+}
 case $(uname -s) in
 Linux)
   case $(uname -m) in
@@ -29,6 +47,7 @@ Linux)
   tmp=$dir/.zenith-download
   say "Downloading $file"
   curl -fL --progress-bar "$base/$file" -o "$tmp" || { rm -f "$tmp"; die "download failed"; }
+  verify "$file" "$tmp" || { rm -f "$tmp"; die "install stopped"; }
   chmod +x "$tmp" && mv "$tmp" "$dir/zenith" || die "could not install to $dir"
   say "Zenith $ver installed as $dir/zenith."
   case :$PATH: in
@@ -46,6 +65,7 @@ Darwin)
   trap 'hdiutil detach "$mnt" -quiet 2>/dev/null || true; rm -rf "$tmp"' EXIT
   say "Downloading $file"
   curl -fL --progress-bar "$base/$file" -o "$tmp/Zenith.dmg" || die "download failed"
+  verify "$file" "$tmp/Zenith.dmg" || die "install stopped"
   mkdir "$mnt"
   hdiutil attach "$tmp/Zenith.dmg" -nobrowse -quiet -mountpoint "$mnt" || die "could not open the disk image"
   app=$mnt/Zenith.app
