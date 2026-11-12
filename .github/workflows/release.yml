@@ -108,7 +108,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir dist
-          gh release download "$GITHUB_REF_NAME" --dir dist
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir dist
           rm -f dist/SHA256SUMS
           (cd dist && sha256sum * > ../SHA256SUMS)
       - uses: softprops/action-gh-release@v2
