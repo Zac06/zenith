@@ -3,6 +3,8 @@ import DOMPurify from "dompurify";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { Image } from "@tauri-apps/api/image";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCourseStack } from "./courseStack";
 import * as api from "./api";
@@ -810,6 +812,26 @@ type Due = api.UpcomingAssign & { submitted: boolean | null };
 type Overlay = { kind: "html" | "forum" | "assign"; title: string; url?: string; id?: number; assign?: api.Assign; course?: string; group?: number };
 type View = { token: string; stack: api.Course[]; overlay: Overlay | null; settingsOpen: boolean; explore: boolean };
 
+// Windows and X11 show a per-window icon; Wayland and macOS ignore it, so the error is dropped.
+async function tintWindowIcon(accent: string) {
+  const c = document.createElement("canvas"); c.width = c.height = 256;
+  const x = c.getContext("2d")!, s = (p: string) => new Path2D(p);
+  x.scale(0.25, 0.25);   // the same geometry as the 1024px src-tauri/icons/icon.svg
+  x.fillStyle = accent || "#1f5c4a";
+  x.fill(s("M264 64H760A200 200 0 0 1 960 264V760A200 200 0 0 1 760 960H264A200 200 0 0 1 64 760V264A200 200 0 0 1 264 64Z"));
+  x.strokeStyle = "#7cc9a8"; x.lineWidth = 36;
+  x.stroke(s("M212 640A332 332 0 0 1 812 640"));
+  x.strokeStyle = "#eef3f0"; x.lineCap = "round";
+  x.stroke(s("M168 640H856"));
+  x.lineWidth = 18;
+  x.stroke(s("M512 528V640"));
+  x.fillStyle = "#eef3f0"; x.beginPath(); x.arc(512, 450, 80, 0, Math.PI * 2); x.fill();
+  const rgba = new Uint8Array(x.getImageData(0, 0, 256, 256).data);
+  const img = await Image.new(rgba, 256, 256);
+  await getCurrentWindow().setIcon(img);
+  await img.close();
+}
+
 export default function App() {
   const [session, setSession] = useState<api.Session | null | undefined>(undefined);
   const [info, setInfo] = useState<api.Info | null>(null); const [courses, setCourses] = useState<api.Course[]>([]);
@@ -840,6 +862,7 @@ export default function App() {
     if (high) r.dataset.contrast = "high"; else delete r.dataset.contrast;
     if (accent) { r.dataset.accent = ""; r.style.setProperty("--a", accent); } else { delete r.dataset.accent; r.style.removeProperty("--a"); }
   }, [theme, high, accent]);
+  useEffect(() => { if (!api.isMobile()) tintWindowIcon(accent).catch(() => {}); }, [accent]);
   const [explore, setExplore] = useState(false); const [enrolledIds, setEnrolledIds] = useState<Set<number>>(new Set());
   const [stack, setStack, back, clear] = useCourseStack<api.Course>(); const [q, setQ] = useState("");
   const open_ = stack[stack.length - 1] ?? null;

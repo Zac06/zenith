@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Material You themed icon: the launcher keeps the alpha and tints it with the wallpaper colours. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+  <group
+      android:scaleX="0.094"
+      android:scaleY="0.094"
+      android:translateX="5.9"
+      android:translateY="5.9">
+    <path
+        android:pathData="M212,640 A332,332 0 0,1 812,640"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="36"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M168,640 H856"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="36"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M512,528 V640"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="18"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M592,450 A80,80 0 1,1 432,450 A80,80 0 1,1 592,450"
+        android:fillColor="#FFFFFFFF" />
+  </group>
+</vector>
