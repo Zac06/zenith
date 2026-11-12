@@ -182,3 +182,8 @@ button{touch-action:manipulation}
   .panel{justify-content:flex-start;padding:28px 24px calc(28px + env(safe-area-inset-bottom))}
 }
 .summary .subhead{margin:18px 0 8px;font:600 14px var(--serif)}.summary .joinrow{margin:8px 0}.summary .status{margin:0 0 8px}.chip.off{background:none;border:1px solid var(--line);color:var(--mut)}
+.swipehint{position:fixed;inset:0;z-index:30;pointer-events:none}
+.swipehint .bub{position:absolute;top:calc(50% - 22px);width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:var(--card);color:var(--fg);border:1px solid var(--line);box-shadow:0 6px 20px #0003;opacity:0;transform:translateX(var(--tx,0)) scale(var(--sc,1));transition:transform .12s cubic-bezier(.2,1.6,.45,1),opacity .18s ease-out}
+.swipehint.on .bub{opacity:var(--o,.5)}
+.swipehint[data-dir="-1"] .bub{left:14px}
+.swipehint[data-dir="1"] .bub{right:14px}.swipehint[data-dir="1"] .bub svg{transform:scaleX(-1)}

@@ -94,6 +94,13 @@ if (import.meta.env.DEV) {
   console.assert(navKey({ altKey: true, ctrlKey: false, metaKey: false, shiftKey: false, key: "ArrowLeft" }) === -1, "Alt+Left goes back");
   console.assert(navKey({ altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, key: "ArrowLeft" }) === 0, "plain arrows are left alone");
 }
+// A two-finger trackpad swipe arrives as horizontal wheel deltas. Firefox goes back on a left swipe; the OS
+// scroll direction setting flips which way is positive, so the same delta means the opposite swipe.
+const swipeDir = (dx: number, natural: boolean) => (Math.abs(dx) > 120 ? Math.sign(dx) * (natural ? -1 : 1) : 0);
+if (import.meta.env.DEV) {
+  console.assert(swipeDir(-150, false) === -1 && swipeDir(150, false) === 1 && swipeDir(-40, false) === 0, "swipe left goes back");
+  console.assert(swipeDir(150, true) === -1, "natural scrolling flips the swipe");
+}
 // Saved API answers, so courses that were already opened stay readable without a connection.
 const CACHE = "zenith:cache:";
 const cacheGet = <T,>(k: string): T | undefined => { try { const v = localStorage.getItem(CACHE + k); return v === null ? undefined : JSON.parse(v) as T; } catch { return undefined; } };
@@ -792,15 +799,19 @@ export default function App() {
   const [dl, setDl] = useState<Dl | null>(null);
   const [overlay, setOverlay] = useState<Overlay | null>(null);
   const viewKey = useRef(""); const restoringView = useRef(false);
+  const hidx = useRef(0), hmax = useRef(0);   // current entry and the furthest one, to tell if back/forward exists
+  const natural = useRef(false); const hintRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { api.naturalScroll().then((v) => { natural.current = v; }).catch(() => {}); }, []);
   // Browser history is the screen history: back/forward (buttons, Alt+Arrow, Android back) move through it.
   useLayoutEffect(() => {
     if (!session) return;
     const view: View = { token: session.token, stack, overlay, settingsOpen, explore };
     const key = JSON.stringify(view);
     if (restoringView.current) { restoringView.current = false; viewKey.current = key; return; }
-    if (!viewKey.current) { history.replaceState({ view }, ""); viewKey.current = key; return; }
+    if (!viewKey.current) { history.replaceState({ view, i: 0 }, ""); hidx.current = 0; hmax.current = 0; viewKey.current = key; return; }
     if (key === viewKey.current) return;
-    history.pushState({ view }, "");
+    hidx.current++; hmax.current = hidx.current;   // a push drops any forward entries
+    history.pushState({ view, i: hidx.current }, "");
     viewKey.current = key;
   }, [session, stack, overlay, settingsOpen, explore]);
   useEffect(() => {
@@ -808,6 +819,7 @@ export default function App() {
       const v = e.state?.view as View | undefined;
       // Entries from a previous login must not bring another account's courses back.
       if (!v || !session || v.token !== session.token) return;
+      hidx.current = e.state?.i ?? 0;
       restoringView.current = true;
       setStack(v.stack); setOverlay(v.overlay); setSettingsOpen(v.settingsOpen); setExplore(v.explore);
     };
@@ -825,6 +837,54 @@ export default function App() {
     };
     window.addEventListener("keydown", f);
     return () => window.removeEventListener("keydown", f);
+  }, []);
+  // The WebView has no native swipe gesture (wry disables it), so accumulate the wheel deltas of one gesture.
+  useEffect(() => {
+    if (api.isMobile()) return;
+    let acc = 0, last = 0, lock = 0, release = 0;
+    const draw = (dir: number, p: number) => {
+      const el = hintRef.current, b = el?.firstElementChild as HTMLElement | null;
+      if (!el || !b) return;
+      el.dataset.dir = String(dir); el.classList.add("on");
+      b.style.setProperty("--tx", `${dir * (1 - p) * 36}px`);   // mostly off the edge, sliding in
+      b.style.setProperty("--sc", String(0.8 + p * 0.2));
+      b.style.setProperty("--o", String(0.3 + p * 0.7));
+    };
+    const hide = () => hintRef.current?.classList.remove("on");
+    const can = (dir: number) => (dir < 0 ? hidx.current > 0 : hidx.current < hmax.current);
+    // shortcut: a 130 ms silence stands in for "fingers lifted" because wheel events carry no gesture end;
+    // upgrade to a native gesture once the WebView exposes one.
+    const finish = () => {
+      const dir = swipeDir(acc, natural.current);
+      acc = 0;
+      if (!dir || !can(dir)) return hide();
+      lock = performance.now() + 150;
+      draw(dir, 1); window.setTimeout(hide, 160);
+      if (dir < 0) history.back(); else history.forward();
+    };
+    const f = (e: WheelEvent) => {
+      if (e.ctrlKey) return;   // pinch zoom
+      // momentum left over from the gesture that just navigated must not start another one
+      if (e.timeStamp < lock) { lock = e.timeStamp + 150; return; }
+      const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerWidth : 1;   // lines / pages -> pixels
+      const dx = e.deltaX * k, dy = e.deltaY * k;
+      if (Math.abs(dx) <= Math.abs(dy)) return;
+      // a genuinely sideways-scrollable element keeps its scroll
+      for (let el = e.target instanceof Element ? e.target : null; el; el = el.parentElement) {
+        const s = getComputedStyle(el);
+        if ((s.overflowX === "auto" || s.overflowX === "scroll") && el.scrollWidth > el.clientWidth) return;
+      }
+      if (e.timeStamp - last > 150) acc = 0;   // a pause starts a new gesture
+      last = e.timeStamp;
+      if (Math.sign(acc) !== Math.sign(dx)) acc = 0;
+      acc += dx;
+      const way = Math.sign(acc) * (natural.current ? -1 : 1);   // -1 back, +1 forward
+      if (can(way)) draw(way, Math.min(Math.abs(acc) / 120, 1)); else hide();
+      clearTimeout(release);
+      release = window.setTimeout(finish, 130);
+    };
+    window.addEventListener("wheel", f, { passive: true });
+    return () => window.removeEventListener("wheel", f);
   }, []);
   const notify = useCallback((m: string) => { setToast(m); setTimeout(() => setToast(""), 3500); }, []);
   useEffect(() => {
@@ -1008,7 +1068,7 @@ export default function App() {
   const pick = async () => { const p = await open({ directory: true, title: "Choose download folder" }); if (typeof p === "string") { localStorage.setItem("dlDir", p); setDir(p); return p; } return null; };
   const resetDir = () => { localStorage.removeItem("dlDir"); setDir(null); };
 
-  const signOut = () => api.logout().then(() => { viewKey.current = ""; restoringView.current = false; clear(); cacheClear(); setOverlay(null); setInfo(null); setCourses([]); refresh(); });
+  const signOut = () => api.logout().then(() => { viewKey.current = ""; restoringView.current = false; hidx.current = 0; hmax.current = 0; clear(); cacheClear(); setOverlay(null); setInfo(null); setCourses([]); refresh(); });
   if (session === undefined) return null;
   if (!session) return setup
     ? <Setup theme={theme} setTheme={setTheme} contrast={contrast} setContrast={setContrast} onDone={finishSetup} />
@@ -1101,6 +1161,7 @@ export default function App() {
         {dl && <div className={dl.total ? "dlbar" : "dlbar indet"}>{dl.total ? <i style={{ width: `${Math.min(100, Math.round((dl.done / dl.total) * 100))}%` }} /> : <i />}</div>}
         {dl && <span className="dltext">{size(dl.done)}{dl.total ? ` of ${size(dl.total)}` : ""}</span>}
       </div>}
+      <div className="swipehint" ref={hintRef} aria-hidden="true"><span className="bub"><Icon n="back" s={22} /></span></div>
     </div>
   );
 }

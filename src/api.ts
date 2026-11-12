@@ -8,6 +8,7 @@ import { fake } from "./demo";
 let demo = false;
 let mobile = false;
 export const isMobile = () => mobile;
+export const naturalScroll = () => invoke<boolean>("natural_scroll");
 export const init = () => Promise.all([real<boolean>("screenshot_mode"), real<boolean>("is_mobile")])
   .then(([d, m]) => { demo = d; mobile = m; if (m) document.documentElement.dataset.mobile = ""; }).catch(() => {});
 // The Android WebView keeps navigator.onLine true with no internet, so also remember when a call fails like a dead network.

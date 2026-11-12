@@ -588,6 +588,38 @@ fn screenshot_mode() -> bool {
 fn is_mobile() -> bool {
     cfg!(mobile)
 }
+
+/// The OS scroll-direction setting flips the sign of a two-finger swipe's wheel deltas, so the frontend
+/// needs it to keep "swipe left goes back" true. Falls back to traditional scrolling.
+#[tauri::command]
+fn natural_scroll() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let de = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_lowercase();
+        let (cmd, args): (&str, &[&str]) = if de.contains("kde") || de.contains("plasma") {
+            ("kreadconfig6", &["--file", "kcminputrc", "--group", "Touchpad", "--key", "NaturalScroll"])
+        } else {
+            ("gsettings", &["get", "org.gnome.desktop.peripherals.touchpad", "natural-scroll"])
+        };
+        return std::process::Command::new(cmd)
+            .args(args)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+            .unwrap_or(false);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return std::process::Command::new("defaults")
+            .args(["read", "-g", "com.apple.swipescrolldirection"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+            .unwrap_or(true);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        true
+    }
+}
 #[tauri::command]
 fn default_download_dir(app: AppHandle) -> Result<String, String> {
     default_dir(&app).map(|p| p.to_string_lossy().to_string())
@@ -1285,6 +1317,7 @@ pub fn run() {
             default_download_dir,
             screenshot_mode,
             is_mobile,
+            natural_scroll,
             open_external,
             open_authed,
             check_update,
