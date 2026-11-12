@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
@@ -56,9 +56,43 @@ const tokenised = (u: string, site: string, token: string) => {
 };
 const realImage = (u: string | undefined, site: string, token: string) => (u && !u.startsWith("data:") ? tokenised(u, site, token) : null);
 const isHtmlFile = (f: api.FileItem) => /\.html?$/i.test(f.filename) || f.mimetype === "text/html";
+const isHtmlUrl = (u: URL) => /\.html?$/i.test(u.pathname);
+// A plain pluginfile.php URL only authenticates a browser session; the webservice path is the one that accepts a token.
+const webserviceUrl = (u: URL) => {
+  const x = new URL(u);
+  if (x.pathname.includes("/pluginfile.php/") && !x.pathname.includes("/webservice/")) x.pathname = x.pathname.replace("/pluginfile.php/", "/webservice/pluginfile.php/");
+  return x.toString();
+};
 if (import.meta.env.DEV) {
   console.assert(tokenised("/pluginfile.php/1/a.png", "https://m.uni.edu", "t") === "https://m.uni.edu/webservice/pluginfile.php/1/a.png?token=t");
   console.assert(tokenised("https://other.edu/a.png", "https://m.uni.edu", "t") === "https://other.edu/a.png");
+}
+// Same-site Moodle links the app can show without fetching a full page. A forum link may carry the forum
+// instance (f=) or the course module (id=); the other activities only take a course module id.
+type ModLink = { kind: "course" | "forum" | "assign"; id: number; instance?: boolean };
+const moodleLink = (u: URL, site: string): ModLink | null => {
+  if (u.origin !== new URL(site).origin) return null;
+  const n = (k: string) => Number(u.searchParams.get(k)) || 0;
+  if (u.pathname.endsWith("/course/view.php")) return n("id") ? { kind: "course", id: n("id") } : null;
+  if (u.pathname.endsWith("/mod/forum/view.php")) {
+    if (n("f")) return { kind: "forum", id: n("f"), instance: true };
+    return n("id") ? { kind: "forum", id: n("id") } : null;
+  }
+  if (u.pathname.endsWith("/mod/assign/view.php")) return n("id") ? { kind: "assign", id: n("id") } : null;
+  return null;
+};
+if (import.meta.env.DEV) {
+  console.assert(moodleLink(new URL("https://m.uni.edu/mod/assign/view.php?id=7"), "https://m.uni.edu")?.id === 7, "assignment link is internal");
+  console.assert(moodleLink(new URL("https://m.uni.edu/mod/forum/view.php?f=3"), "https://m.uni.edu")?.instance === true, "forum instance link is internal");
+  console.assert(moodleLink(new URL("https://other.edu/course/view.php?id=1"), "https://m.uni.edu") === null, "foreign links stay external");
+  console.assert(webserviceUrl(new URL("https://m.uni.edu/pluginfile.php/1/mod_resource/x.html")) === "https://m.uni.edu/webservice/pluginfile.php/1/mod_resource/x.html", "html files use the token endpoint");
+}
+// Alt+Left / Alt+Right is the desktop convention for back / forward. Plain arrows and text editing stay untouched.
+const navKey = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; key: string }) =>
+  e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey ? (e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0) : 0;
+if (import.meta.env.DEV) {
+  console.assert(navKey({ altKey: true, ctrlKey: false, metaKey: false, shiftKey: false, key: "ArrowLeft" }) === -1, "Alt+Left goes back");
+  console.assert(navKey({ altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, key: "ArrowLeft" }) === 0, "plain arrows are left alone");
 }
 // Saved API answers, so courses that were already opened stay readable without a connection.
 const CACHE = "zenith:cache:";
@@ -190,13 +224,15 @@ const pluginOn = (a: api.Assign, what: "file" | "onlinetext") => {
   return c?.value === "1";
 };
 
-function AssignRow({ a, site, token, onLink, getFile, onSubmitted }: { a: api.Assign; site: string; token: string; onLink: (href: string) => void; getFile: (f: api.FileItem) => void; onSubmitted?: () => void }) {
-  const [expanded, setExpanded] = useState(false); const [st, setSt] = useState<api.AssignStatus | null>(null); const [err, setErr] = useState("");
+function AssignRow({ a, site, token, onLink, getFile, onSubmitted, onOpen, page, onClose }: { a: api.Assign; site: string; token: string; onLink: (href: string) => void; getFile: (f: api.FileItem) => void; onSubmitted?: () => void; onOpen?: () => void; page?: boolean; onClose?: () => void }) {
+  const [isOpen, setOpen] = useState(false); const [st, setSt] = useState<api.AssignStatus | null>(null); const [err, setErr] = useState("");
   const [text, setText] = useState(""); const [loadedText, setLoadedText] = useState(""); const [picked, setPicked] = useState<string[]>([]); const [saving, setSaving] = useState(false); const [msg, setMsg] = useState(""); const [agreed, setAgreed] = useState(false);
   // Moodle returns the answer as formatted HTML; edit it as plain text and only send it back when changed,
   // so attaching a file to an existing answer never flattens it. shortcut: rich formatting is lost on edit.
   const load = () => api.assignStatus(a.id).then((s) => { setSt(s); const t = toText(s.text ?? ""); setText(t); setLoadedText(t); setErr(""); }).catch((e) => setErr(String(e)));
-  const toggle = () => { setExpanded(!expanded); if (!expanded && !st) load(); };
+  const expanded = page || isOpen;
+  const toggle = () => { if (page) return; if (onOpen) { onOpen(); return; } setOpen(!isOpen); if (!isOpen && !st) load(); };
+  useEffect(() => { if (page && !st) load(); }, [page]);
   const late = a.duedate > 0 && a.duedate * 1000 < Date.now();
   const locked = a.allowsubmissionsfromdate * 1000 > Date.now();   // 0 = no opening date
   const drafts = a.submissiondrafts === 1;
@@ -237,12 +273,13 @@ function AssignRow({ a, site, token, onLink, getFile, onSubmitted }: { a: api.As
     setSaving(false);
   };
   return (<>
-    <button className="item" onClick={toggle}>
+    {page && <div className="bar"><button className="icon" onClick={onClose} title="Back"><Icon n="back" /></button><h1>{a.name}</h1></div>}
+    {!page && <button className="item" onClick={toggle}>
       <span className="ico"><Icon n={locked ? "lock" : "check"} /></span>
       <span className="grow">{a.name}{locked && <small>Locked until {when(a.allowsubmissionsfromdate)}</small>}<small>{a.duedate ? (late ? "Was due " : "Due ") + when(a.duedate) : "No due date"}</small></span>
       <span className={expanded ? "chev" : "chev shut"}><Icon n="chev" /></span>
-    </button>
-    {expanded && <div className="summary">
+    </button>}
+    {expanded && <div className={page ? "summary pagebody" : "summary"}>
       {hasContent(a.intro) && <Html site={site} html={a.intro!} token={token} onLink={onLink} />}
       {!!a.introattachments?.length && <>
         <h4 className="subhead">Files from your teacher</h4>
@@ -256,7 +293,10 @@ function AssignRow({ a, site, token, onLink, getFile, onSubmitted }: { a: api.As
           {pluginOn(a, "onlinetext") && <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Write your answer…" rows={5} />}
           {pluginOn(a, "file") && <div className="joinrow">
             <button className="btn" onClick={choose}>Attach files…</button>
-            {picked.map((p) => <span className="chip" key={p}>{p.split(/[\\/]/).pop()}</span>)}
+            {picked.map((p) => <span className="chip file" key={p}>
+              <button title={p} onClick={() => api.openPicked(p).catch((e) => setMsg(String(e).replace(/^Error: /, "")))}>{p.split(/[\\/]/).pop()}</button>
+              <button title="Remove" aria-label={"Remove " + p} onClick={() => setPicked(picked.filter((x) => x !== p))}><Icon n="x" s={12} /></button>
+            </span>)}
           </div>}
           {picked.length > 0 && <small className="muted">The attached files replace any files already submitted. Leave this empty to keep them.</small>}
           {a.requiresubmissionstatement === 1 && <div className="joinrow">
@@ -276,7 +316,7 @@ function AssignRow({ a, site, token, onLink, getFile, onSubmitted }: { a: api.As
 
 type Dl = { id: string; name: string; done: number; total: number | null };
 
-function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMode, setDl, onSubmitted }: { c: api.Course; site: string; token: string; dir: string | null; notify: (m: string) => void; onLink: (href: string) => void; onHtml: (title: string, url: string) => void; onForum: (title: string, id: number) => void; dlMode: api.DlMode; setDl: React.Dispatch<React.SetStateAction<Dl | null>>; onSubmitted?: () => void }) {
+function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMode, setDl, onSubmitted, assignPages, onAssign }: { c: api.Course; site: string; token: string; dir: string | null; notify: (m: string) => void; onLink: (href: string) => void; onHtml: (title: string, url: string) => void; onForum: (title: string, id: number) => void; dlMode: api.DlMode; setDl: React.Dispatch<React.SetStateAction<Dl | null>>; onSubmitted?: () => void; assignPages: boolean; onAssign: (a: api.Assign, course: string, group: number) => void }) {
   const [secs, setSecs] = useState<api.Section[] | null>(null); const [err, setErr] = useState(""); const [closed, setClosed] = useState<Record<number, boolean>>({});
   useEffect(() => {
     setSecs(null); setErr("");
@@ -294,7 +334,7 @@ function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMo
     api.courseAssignments(c.id).then((l) => { setAssigns(new Map(l.map((a) => [a.cmid, a]))); cacheSet(key, l); })
       .catch(() => { if (cached) setAssigns(new Map(cached.map((a) => [a.cmid, a]))); });
   }, [c.id]);
-  const [saved, setSaved] = useState<Map<string, string>>(new Map()); const [menu, setMenu] = useState<{ f: api.FileItem; g: number; path: string; x: number; y: number } | null>(null);
+  const [saved, setSaved] = useState<Map<string, string>>(new Map()); const [menu, setMenu] = useState<{ f: api.FileItem; g: number; path?: string; x: number; y: number } | null>(null);
   const dlBusy = useRef(new Set<string>());
   const refreshSaved = () => api.listDownloads().then((l) => setSaved(new Map(l.map((e) => [e.course + "::" + e.name, e.path])))).catch(() => {});
   useEffect(() => { refreshSaved(); }, []);
@@ -306,7 +346,7 @@ function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMo
     const folder = group ? folderOf(f, group) : course, key = folder + "::" + f.filename;
     if (dlBusy.current.has(key)) return;   // a second click while it downloads
     // a Moodle-hosted HTML resource is a page, not a bare file: show it in the app with its pictures and links intact
-    if (isHtmlFile(f) && sameOrigin(site, f.fileurl)) { onHtml(f.filename, f.fileurl); return; }
+    if (isHtmlFile(f) && sameOrigin(site, f.fileurl)) { onHtml(f.filename, webserviceUrl(new URL(f.fileurl, site))); return; }
     if (api.isOffline() && !saved.has(key)) { notify(f.filename + " isn't downloaded yet — connect to the internet to get it."); return; }
     notify((force ? "Downloading " : "Opening ") + f.filename + "…");
     dlBusy.current.add(key);
@@ -344,7 +384,7 @@ function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMo
       <div className="item locked" key={m.id}><span className="ico"><Icon n="lock" /></span>
         <span className="grow">{m.name}<small>Locked</small>{m.availabilityinfo && <small>{plain(m.availabilityinfo)}</small>}</span></div>);
     const a = m.modname === "assign" ? assigns.get(m.id) : undefined;
-    if (a) return <AssignRow key={m.id} a={a} site={site} token={token} onLink={onLink} getFile={(f) => getFile(f, false, m.id)} onSubmitted={onSubmitted} />;
+    if (a) return <AssignRow key={m.id} a={a} site={site} token={token} onLink={onLink} getFile={(f) => getFile(f, false, m.id)} onSubmitted={onSubmitted} onOpen={assignPages ? () => onAssign(a, course, m.id) : undefined} />;
     if (m.modname === "forum" && m.instance) return (
       <button className="item" key={m.id} onClick={() => onForum(m.name, m.instance!)}>
         <span className="ico"><Icon n="chat" /></span>
@@ -355,16 +395,17 @@ function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMo
     if (files.length) return files.map((f) => {
       const savedPath = saved.get(folderOf(f, m.id) + "::" + f.filename);
       const isSaved = savedPath !== undefined;
+      const isHtml = isHtmlFile(f) && sameOrigin(site, f.fileurl);
       return (
         <div className="item" role="button" key={m.id + (f.filepath ?? "") + f.filename} onClick={() => getFile(f, false, m.id)}>
           <span className="ico"><Icon n={modIcon(m.modname)} /></span>
           <span className="grow">{m.modname === "folder" ? `${m.name} / ${f.filename}` : m.name}<small>{f.filename} · {size(f.filesize)}{isSaved ? " · saved" : ""}</small></span>
-          {isSaved
+          {isSaved || isHtml
             ? <button className="icon" title="Options" onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setMenu({ f, g: m.id, path: savedPath, x: window.innerWidth - r.right, y: r.bottom + 4 }); }}><Icon n="dots" /></button>
             : <Icon n="down" />}
         </div>);
     });
-    const isUrl = m.modname === "url"; const target = isUrl ? m.contents?.[0]?.fileurl ?? m.url : m.url;
+    const isUrl = m.modname === "url"; const target = isUrl ? m.contents?.[0]?.fileurl ?? m.url : m.url ?? `${site}/mod/${m.modname}/view.php?id=${m.id}`;
     return (
       <button className="item" key={m.id} onClick={() => target && onLink(target)}>
         <span className="ico"><Icon n={modIcon(m.modname)} /></span><span className="grow">{m.name}<small>{isUrl ? "link" : m.modname + " · opens in browser"}</small></span><Icon n="link" s={16} />
@@ -379,8 +420,11 @@ function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMo
       {!closed[s.id] && renderMods(s.modules)}
     </section>))}
     {menu && <div className="menu" style={{ position: "fixed", top: menu.y, right: menu.x }} onClick={(e) => e.stopPropagation()}>
-      <button className="desk" onClick={() => { setMenu(null); api.revealFile(menu.path).catch((e) => notify(String(e))); }}><Icon n="folder" s={16} />Show in folder</button>
-      <button onClick={() => getFile(menu.f, true, menu.g)}><Icon n="down" s={16} />Download again</button></div>}
+      {isHtmlFile(menu.f) && sameOrigin(site, menu.f.fileurl) && <button onClick={() => { setMenu(null); api.openWeb(menu.f.fileurl); }}><Icon n="ext" s={16} />Open in browser</button>}
+      {menu.path && <>
+        <button className="desk" onClick={() => { setMenu(null); api.revealFile(menu.path!).catch((e) => notify(String(e))); }}><Icon n="folder" s={16} />Show in folder</button>
+        <button onClick={() => getFile(menu.f, true, menu.g)}><Icon n="down" s={16} />Download again</button>
+      </>}</div>}
   </div>);
 }
 
@@ -558,6 +602,16 @@ const UPDATE_MODES: [api.UpdateMode, string, string][] = [
   ["manual", "Manual only", "Only check when you press the button."],
 ];
 
+const ASSIGN_PAGES: [boolean, string, string][] = [
+  [true, "Separate page", "Open each assignment on its own page, like announcements."],
+  [false, "Inside the course", "Expand assignments in the course list."],
+];
+
+const INTERNAL_LINKS: [boolean, string, string][] = [
+  [true, "Open in the app", "Courses, forums and assignments from course text stay inside Zenith."],
+  [false, "Open in your browser", "Every Moodle link opens in the system browser."],
+];
+
 function About() {
   const [version, setVersion] = useState("");
   useEffect(() => { getVersion().then(setVersion).catch(() => {}); }, []);
@@ -576,7 +630,7 @@ function About() {
   </div>);
 }
 
-function Settings({ user, site, signOut, dir, pick, reset, mode, setMode, notify, theme, setTheme, contrast, setContrast, updateMode, setUpdateMode, checkNow, checking, canUpdate, accent, setAccent }: { user: string; site: string; signOut: () => void; dir: string | null; pick: () => Promise<string | null>; reset: () => void; mode: api.DlMode; setMode: (m: api.DlMode) => void; notify: (m: string) => void; theme: Theme; setTheme: (t: Theme) => void; contrast: Contrast; setContrast: (c: Contrast) => void; updateMode: api.UpdateMode; setUpdateMode: (m: api.UpdateMode) => void; checkNow: () => void; checking: boolean; canUpdate: boolean; accent: string; setAccent: (a: string) => void }) {
+function Settings({ user, site, signOut, dir, pick, reset, mode, setMode, notify, theme, setTheme, contrast, setContrast, updateMode, setUpdateMode, checkNow, checking, canUpdate, accent, setAccent, assignPages, setAssignPages, internalLinks, setInternalLinks }: { user: string; site: string; signOut: () => void; dir: string | null; pick: () => Promise<string | null>; reset: () => void; mode: api.DlMode; setMode: (m: api.DlMode) => void; notify: (m: string) => void; theme: Theme; setTheme: (t: Theme) => void; contrast: Contrast; setContrast: (c: Contrast) => void; updateMode: api.UpdateMode; setUpdateMode: (m: api.UpdateMode) => void; checkNow: () => void; checking: boolean; canUpdate: boolean; accent: string; setAccent: (a: string) => void; assignPages: boolean; setAssignPages: (v: boolean) => void; internalLinks: boolean; setInternalLinks: (v: boolean) => void }) {
   const [tab, setTab] = useState<(typeof SETTINGS_TABS)[number][0]>("general");
   const [files, setFiles] = useState<api.DlEntry[] | null>(null); const [confirm, setConfirm] = useState<string | null>(null);
   const reload = () => api.listDownloads().then(setFiles).catch(() => setFiles([]));
@@ -604,6 +658,13 @@ function Settings({ user, site, signOut, dir, pick, reset, mode, setMode, notify
           <div className="choices">{UPDATE_MODES.map(([k, t, d]) => <button key={k} className={updateMode === k ? "choice on" : "choice"} onClick={() => setUpdateMode(k)}><b>{t}</b><small>{d}</small></button>)}</div></div>
         <div className="setrow"><div className="grow"><b>Check for updates now</b><small>{canUpdate ? "Downloads and installs from GitHub releases." : "In-app install isn't available for this package; updates open the release page."}</small></div>
           <button className="btn" disabled={checking} onClick={checkNow}>{checking ? "Checking…" : "Check now"}</button></div>
+      </section>
+      <section className="sec">
+        <div className="sechead static">Courses</div>
+        <div className="setrow col"><b>Assignments</b>
+          <div className="choices">{ASSIGN_PAGES.map(([k, t, d]) => <button key={String(k)} aria-pressed={assignPages === k} className={assignPages === k ? "choice on" : "choice"} onClick={() => setAssignPages(k)}><b>{t}</b><small>{d}</small></button>)}</div></div>
+        <div className="setrow col"><b>Moodle links</b>
+          <div className="choices">{INTERNAL_LINKS.map(([k, t, d]) => <button key={String(k)} aria-pressed={internalLinks === k} className={internalLinks === k ? "choice on" : "choice"} onClick={() => setInternalLinks(k)}><b>{t}</b><small>{d}</small></button>)}</div></div>
       </section>
       </>)}
       {tab === "appearance" && (<>
@@ -689,6 +750,8 @@ function Setup({ theme, setTheme, contrast, setContrast, onDone }: { theme: Them
 }
 
 type Due = api.UpcomingAssign & { submitted: boolean | null };
+type Overlay = { kind: "html" | "forum" | "assign"; title: string; url?: string; id?: number; assign?: api.Assign; course?: string; group?: number };
+type View = { token: string; stack: api.Course[]; overlay: Overlay | null; settingsOpen: boolean; explore: boolean };
 
 export default function App() {
   const [session, setSession] = useState<api.Session | null | undefined>(undefined);
@@ -696,6 +759,10 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [dlMode, setDlMode] = useState<api.DlMode>((localStorage.getItem("dlMode") as api.DlMode) || "updated");
   const changeMode = (m: api.DlMode) => { localStorage.setItem("dlMode", m); setDlMode(m); };
+  const [assignPages, setAssignPages] = useState(localStorage.getItem("assignPages") !== "off");
+  const changeAssignPages = (v: boolean) => { localStorage.setItem("assignPages", v ? "on" : "off"); setAssignPages(v); };
+  const [internalLinks, setInternalLinks] = useState(localStorage.getItem("internalLinks") !== "off");
+  const changeInternalLinks = (v: boolean) => { localStorage.setItem("internalLinks", v ? "on" : "off"); setInternalLinks(v); };
   const [theme, setThemeState] = useState<Theme>((localStorage.getItem("theme") as Theme) || "system");
   const [contrast, setContrastState] = useState<Contrast>(() => { const v = localStorage.getItem("contrast"); return v === "on" || v === "high" ? "on" : v === "off" ? "off" : "system"; });   // System by default
   const [osHigh, setOsHigh] = useState(() => matchMedia("(prefers-contrast: more)").matches);
@@ -723,7 +790,42 @@ export default function App() {
   const offlineRef = useRef(offline); offlineRef.current = offline;
   const [tick, setTick] = useState(0);   // bumped when the connection comes back, to reload what was served from the cache
   const [dl, setDl] = useState<Dl | null>(null);
-  const [overlay, setOverlay] = useState<{ kind: "html" | "forum"; title: string; url?: string; id?: number } | null>(null);
+  const [overlay, setOverlay] = useState<Overlay | null>(null);
+  const viewKey = useRef(""); const restoringView = useRef(false);
+  // Browser history is the screen history: back/forward (buttons, Alt+Arrow, Android back) move through it.
+  useLayoutEffect(() => {
+    if (!session) return;
+    const view: View = { token: session.token, stack, overlay, settingsOpen, explore };
+    const key = JSON.stringify(view);
+    if (restoringView.current) { restoringView.current = false; viewKey.current = key; return; }
+    if (!viewKey.current) { history.replaceState({ view }, ""); viewKey.current = key; return; }
+    if (key === viewKey.current) return;
+    history.pushState({ view }, "");
+    viewKey.current = key;
+  }, [session, stack, overlay, settingsOpen, explore]);
+  useEffect(() => {
+    const f = (e: PopStateEvent) => {
+      const v = e.state?.view as View | undefined;
+      // Entries from a previous login must not bring another account's courses back.
+      if (!v || !session || v.token !== session.token) return;
+      restoringView.current = true;
+      setStack(v.stack); setOverlay(v.overlay); setSettingsOpen(v.settingsOpen); setExplore(v.explore);
+    };
+    window.addEventListener("popstate", f);
+    return () => window.removeEventListener("popstate", f);
+  }, [session]);
+  useEffect(() => {
+    if (api.isMobile()) return;   // Alt+Arrow is a desktop shortcut
+    const f = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLElement && e.target.closest("input, textarea, [contenteditable]")) return;
+      const dir = navKey(e);
+      if (!dir) return;
+      e.preventDefault();
+      if (dir < 0) history.back(); else history.forward();
+    };
+    window.addEventListener("keydown", f);
+    return () => window.removeEventListener("keydown", f);
+  }, []);
   const notify = useCallback((m: string) => { setToast(m); setTimeout(() => setToast(""), 3500); }, []);
   useEffect(() => {
     // the WebView's own online flag can stay stale on Android, so poll the site as well (and on focus / network events)
@@ -861,18 +963,52 @@ export default function App() {
       setStack((st) => [...st, c]);
     } catch { api.openWeb(`${session!.site}/course/view.php?id=${id}`); }
   };
-  // same-site course links open in the app; everything else in the system browser
+  // Downloads a file from an assignment page; the course view keeps its own copy for its saved-file menu.
+  const openAttachment = async (f: api.FileItem, course: string, group: number) => {
+    const id = Date.now() + "-" + Math.random().toString(36).slice(2);
+    setDl({ id, name: f.filename, done: 0, total: null });
+    try {
+      const r = await api.download(id, f.fileurl, dir ?? "", `${course}/${group}`, f.filename, dlMode, f.timemodified);
+      notify(r.reused ? "Opened saved copy of " + f.filename : "Downloaded " + f.filename);
+    } catch (e) { notify("Download failed: " + (api.isOffline() ? "you're offline." : e)); }
+    finally { setTimeout(() => setDl((d) => (d?.id === id ? null : d)), 400); }
+  };
+  const openModuleLink = async (t: ModLink, fallback: string) => {
+    try {
+      const m = await api.courseModule(t.id);
+      if (t.kind === "forum" && m.modname === "forum") { setOverlay({ kind: "forum", title: m.name, id: m.instance }); return; }
+      if (t.kind === "assign" && m.modname === "assign") {
+        if (!assignPages) { setOverlay(null); await openCourseById(m.course); return; }
+        const a = (await api.courseAssignments(m.course)).find((x) => x.cmid === m.id);
+        if (a) {
+          const c = await api.courseById(m.course).catch(() => null);
+          setOverlay({ kind: "assign", title: a.name, assign: a, course: c?.shortname || c?.fullname || String(m.course), group: m.id });
+          return;
+        }
+      }
+    } catch { /* fall through to the browser */ }
+    api.openWeb(fallback);
+  };
+  // same-site course/forum/assignment links open in the app; everything else in the system browser
   const handleLink = (href: string) => {
     if (!session) return;
     let u: URL; try { u = new URL(href, session.site + "/"); } catch { return; }
     if (!/^https?:$/.test(u.protocol)) return;
-    const id = u.origin === new URL(session.site).origin && u.pathname.endsWith("/course/view.php") ? Number(u.searchParams.get("id")) : 0;
-    if (id) { setOverlay(null); openCourseById(id); } else api.openWeb(u.toString());
+    if (internalLinks && isHtmlUrl(u) && sameOrigin(session.site, u.toString())) {
+      const name = u.pathname.split("/").pop() || "Page";
+      setOverlay({ kind: "html", title: name, url: webserviceUrl(u) });
+      return;
+    }
+    const t = internalLinks ? moodleLink(u, session.site) : null;
+    if (!t) { api.openWeb(u.toString()); return; }
+    if (t.kind === "course") { setOverlay(null); openCourseById(t.id); }
+    else if (t.kind === "forum" && t.instance) setOverlay({ kind: "forum", title: "Forum", id: t.id });
+    else void openModuleLink(t, u.toString());
   };
   const pick = async () => { const p = await open({ directory: true, title: "Choose download folder" }); if (typeof p === "string") { localStorage.setItem("dlDir", p); setDir(p); return p; } return null; };
   const resetDir = () => { localStorage.removeItem("dlDir"); setDir(null); };
 
-  const signOut = () => api.logout().then(() => { clear(); cacheClear(); setOverlay(null); setInfo(null); setCourses([]); refresh(); });
+  const signOut = () => api.logout().then(() => { viewKey.current = ""; restoringView.current = false; clear(); cacheClear(); setOverlay(null); setInfo(null); setCourses([]); refresh(); });
   if (session === undefined) return null;
   if (!session) return setup
     ? <Setup theme={theme} setTheme={setTheme} contrast={contrast} setContrast={setContrast} onDone={finishSetup} />
@@ -896,24 +1032,28 @@ export default function App() {
         {offline && <div className="offline" role="status"><Icon n="wifi" s={16} /><span>You're offline. Showing courses and files already saved on this device.</span></div>}
         {overlay ? (
           overlay.kind === "forum"
-            ? <ForumPage title={overlay.title} id={overlay.id!} site={session.site} token={session.token} onLink={handleLink} onClose={() => setOverlay(null)} />
-            : <HtmlPage title={overlay.title} url={overlay.url!} site={session.site} token={session.token} onLink={handleLink} onClose={() => setOverlay(null)} />
+            ? <ForumPage title={overlay.title} id={overlay.id!} site={session.site} token={session.token} onLink={handleLink} onClose={back} />
+            : overlay.kind === "assign"
+            ? <AssignRow key={overlay.assign!.id} page a={overlay.assign!} site={session.site} token={session.token} onLink={handleLink} getFile={(f) => openAttachment(f, overlay.course!, overlay.group!)} onSubmitted={() => setDueTick((n) => n + 1)} onClose={back} />
+            : <HtmlPage title={overlay.title} url={overlay.url!} site={session.site} token={session.token} onLink={handleLink} onClose={back} />
         ) : open_ ? (<>
           <div className="bar"><button className="icon" onClick={back}><Icon n="back" /></button><h1>{open_.fullname}</h1></div>
           <div className="banner" style={{ background: tone(open_.id) }}>{open_.shortname}</div>
           <CourseView key={open_.id} dlMode={dlMode} c={open_} site={session.site} token={session.token} dir={dir} notify={notify} onLink={handleLink}
-            onHtml={(title, url) => setOverlay({ kind: "html", title, url })} onForum={(title, id) => setOverlay({ kind: "forum", title, id })} setDl={setDl} onSubmitted={() => setDueTick((n) => n + 1)} />
+            onHtml={(title, url) => setOverlay({ kind: "html", title, url })} onForum={(title, id) => setOverlay({ kind: "forum", title, id })} setDl={setDl} onSubmitted={() => setDueTick((n) => n + 1)}
+            assignPages={assignPages} onAssign={(a, course, group) => setOverlay({ kind: "assign", title: a.name, assign: a, course, group })} />
         </>) : explore ? (
           <Explore site={session.site} token={session.token} enrolled={enrolledIds} notify={notify} onLink={handleLink}
             onJoined={(c) => { setExplore(false); setStack([c]); setEnrolledIds((s) => new Set(s).add(c.id)); load(filter); }} />
         ) : settingsOpen ? (
           <Settings user={info?.fullname ?? ""} site={info?.sitename ?? ""} signOut={signOut} dir={dir} pick={pick} reset={resetDir} mode={dlMode} setMode={changeMode} notify={notify} theme={theme} setTheme={setTheme} contrast={contrast} setContrast={setContrast}
-            updateMode={updateMode} setUpdateMode={setUpdateMode} checkNow={() => void checkForUpdate(true)} checking={updatePhase === "checking"} canUpdate={canSelfUpdate} accent={accent} setAccent={setAccent} />
+            updateMode={updateMode} setUpdateMode={setUpdateMode} checkNow={() => void checkForUpdate(true)} checking={updatePhase === "checking"} canUpdate={canSelfUpdate} accent={accent} setAccent={setAccent}
+            assignPages={assignPages} setAssignPages={changeAssignPages} internalLinks={internalLinks} setInternalLinks={changeInternalLinks} />
         ) : (<>
           <div className="bar"><h1>My courses</h1><input className="search" placeholder="Search courses…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
           {!!due.length && <section className="duecard" aria-label="Upcoming assignments">
             <div className="duehead"><b>Due soon</b><small>{due.length} upcoming</small></div>
-            {due.map((a) => <button className={"due " + (a.submitted === true ? "submitted" : a.submitted === false ? "pending" : "unknown")} key={a.id} onClick={() => openCourseById(a.courseId)}>
+            {due.map((a) => <button className={"due " + (a.submitted === true ? "submitted" : a.submitted === false ? "pending" : "unknown")} key={a.id} onClick={() => assignPages ? setOverlay({ kind: "assign", title: a.name, assign: a, course: a.courseShort, group: a.cmid }) : openCourseById(a.courseId)}>
               <span className="grow"><b>{a.name}</b><small>{a.courseShort} · {when(a.duedate)}</small></span>
               <span className="duestatus">{a.submitted === true ? "Submitted" : a.submitted === false ? "Not submitted" : "Status unavailable"}</span>
             </button>)}

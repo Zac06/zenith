@@ -796,6 +796,12 @@ fn open_local(app: AppHandle, path: String) -> Result<(), String> {
     open_saved(&app, &path)
 }
 
+/// Opens a file the user picked to upload. It is not a download, so it is not in downloads.json.
+#[tauri::command]
+fn open_picked(app: AppHandle, path: String) -> Result<(), String> {
+    open_saved(&app, &path)
+}
+
 /// Shows a saved file in the desktop's file manager. Phones have no user-visible download folder.
 #[cfg(desktop)]
 #[tauri::command]
@@ -1288,6 +1294,7 @@ pub fn run() {
             list_downloads,
             delete_downloads,
             open_local,
+            open_picked,
             reveal_file,
             fetch_content,
             upload_draft_file

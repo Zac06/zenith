@@ -54,6 +54,9 @@ export const setHidden = (uid: number, id: number, hide: boolean) => {
     : ws("core_user_update_user_preferences", { userid: String(uid), "preferences[0][type]": name });
 };
 export const courseContents = (id: number) => ws<Section[]>("core_course_get_contents", { courseid: String(id) });
+export type CourseModule = { id: number; course: number; name: string; modname: string; instance: number };
+export const courseModule = async (cmid: number) =>
+  (await ws<{ cm: CourseModule }>("core_course_get_course_module", { cmid: String(cmid) })).cm;
 export type DlMode = "updated" | "reuse" | "always";
 export type DlEntry = { path: string; course: string; name: string; size: number; at: number };
 export const download = (id: string, url: string, dir: string, subdir: string, filename: string, mode: DlMode, modified?: number, force = false) =>
@@ -62,6 +65,7 @@ export const defaultDownloadDir = () => invoke<string>("default_download_dir");
 export const listDownloads = () => invoke<DlEntry[]>("list_downloads");
 export const deleteDownloads = (paths?: string[]) => invoke<number>("delete_downloads", { paths: paths ?? null });
 export const openLocal = (path: string) => invoke<void>("open_local", { path });
+export const openPicked = (path: string) => invoke<void>("open_picked", { path });
 export const revealFile = (path: string) => invoke<void>("reveal_file", { path });
 export const courseById = async (id: number) =>
   (await ws<{ courses: Course[] }>("core_course_get_courses_by_field", { field: "id", value: String(id) })).courses[0];

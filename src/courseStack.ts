@@ -1,19 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
-// The open courses, one browser-history entry each, so the Android back button (or a mouse's back button) goes up one
-// level instead of leaving the app. history.state.depth is how many courses were open when that entry was made.
+// The open courses, one level per course. App keeps the browser history in sync with every screen, so the
+// back/forward buttons (and Alt+Arrow on a desktop) move between courses, pages and the main sections.
 export function useCourseStack<T>() {
   const [stack, setStack] = useState<T[]>([]);
-  useEffect(() => {
-    if (stack.length > (history.state?.depth ?? 0)) history.pushState({ depth: stack.length }, "");
-  }, [stack.length]);
-  useEffect(() => {
-    const f = (e: PopStateEvent) => setStack((s) => s.slice(0, e.state?.depth ?? 0));
-    window.addEventListener("popstate", f);
-    return () => window.removeEventListener("popstate", f);
-  }, []);
   const back = () => history.back();
-  // leaving for another screen closes every open course at once, and takes their history entries with them
-  const clear = () => (history.state?.depth ? history.go(-history.state.depth) : setStack([]));
+  const clear = () => setStack([]);
   return [stack, setStack, back, clear] as const;
 }
