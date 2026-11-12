@@ -60,8 +60,8 @@ export const courseModule = async (cmid: number) =>
   (await ws<{ cm: CourseModule }>("core_course_get_course_module", { cmid: String(cmid) })).cm;
 export type DlMode = "updated" | "reuse" | "always";
 export type DlEntry = { path: string; course: string; name: string; size: number; at: number };
-export const download = (id: string, url: string, dir: string, subdir: string, filename: string, mode: DlMode, modified?: number, force = false) =>
-  invoke<{ path: string; reused: boolean }>("download_file", { id, url, dir, subdir, filename, mode, modified: modified ?? null, force });
+export const download = (id: string, url: string, dir: string, subdir: string, filename: string, mode: DlMode, modified?: number, force = false, open = true) =>
+  invoke<{ path: string; reused: boolean }>("download_file", { id, url, dir, subdir, filename, mode, modified: modified ?? null, force, open });
 export const defaultDownloadDir = () => invoke<string>("default_download_dir");
 export const listDownloads = () => invoke<DlEntry[]>("list_downloads");
 export const deleteDownloads = (paths?: string[]) => invoke<number>("delete_downloads", { paths: paths ?? null });

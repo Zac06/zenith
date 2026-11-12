@@ -323,7 +323,7 @@ function AssignRow({ a, site, token, onLink, getFile, onSubmitted, onOpen, page,
 
 type Dl = { id: string; name: string; done: number; total: number | null };
 
-function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMode, setDl, onSubmitted, assignPages, onAssign }: { c: api.Course; site: string; token: string; dir: string | null; notify: (m: string) => void; onLink: (href: string) => void; onHtml: (title: string, url: string) => void; onForum: (title: string, id: number) => void; dlMode: api.DlMode; setDl: React.Dispatch<React.SetStateAction<Dl | null>>; onSubmitted?: () => void; assignPages: boolean; onAssign: (a: api.Assign, course: string, group: number) => void }) {
+function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMode, setDl, onSubmitted, assignPages, onAssign, middleDownload }: { c: api.Course; site: string; token: string; dir: string | null; notify: (m: string) => void; onLink: (href: string) => void; onHtml: (title: string, url: string) => void; onForum: (title: string, id: number) => void; dlMode: api.DlMode; setDl: React.Dispatch<React.SetStateAction<Dl | null>>; onSubmitted?: () => void; assignPages: boolean; onAssign: (a: api.Assign, course: string, group: number) => void; middleDownload: boolean }) {
   const [secs, setSecs] = useState<api.Section[] | null>(null); const [err, setErr] = useState(""); const [closed, setClosed] = useState<Record<number, boolean>>({});
   useEffect(() => {
     setSecs(null); setErr("");
@@ -348,20 +348,21 @@ function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMo
   useEffect(() => { const h = () => setMenu(null); window.addEventListener("click", h); return () => window.removeEventListener("click", h); }, []);
   // Saved under <course>/<activity>/<folder path>, so same-named files in different activities never overwrite each other
   const folderOf = (f: api.FileItem, group: number) => `${course}/${group}${f.filepath && f.filepath !== "/" ? f.filepath : ""}`;
-  const getFile = async (f: api.FileItem, force = false, group = 0) => {
+  const getFile = async (f: api.FileItem, force = false, group = 0, open = true) => {
     setMenu(null);
     const folder = group ? folderOf(f, group) : course, key = folder + "::" + f.filename;
     if (dlBusy.current.has(key)) return;   // a second click while it downloads
-    // a Moodle-hosted HTML resource is a page, not a bare file: show it in the app with its pictures and links intact
-    if (isHtmlFile(f) && sameOrigin(site, f.fileurl)) { onHtml(f.filename, webserviceUrl(new URL(f.fileurl, site))); return; }
+    // a Moodle-hosted HTML resource is a page, not a bare file: show it in the app with its pictures and links intact.
+    // "download only" still saves the raw file.
+    if (open && isHtmlFile(f) && sameOrigin(site, f.fileurl)) { onHtml(f.filename, webserviceUrl(new URL(f.fileurl, site))); return; }
     if (api.isOffline() && !saved.has(key)) { notify(f.filename + " isn't downloaded yet — connect to the internet to get it."); return; }
-    notify((force ? "Downloading " : "Opening ") + f.filename + "…");
+    notify((open ? (force ? "Downloading " : "Opening ") : "Downloading ") + f.filename + "…");
     dlBusy.current.add(key);
     const id = Date.now() + "-" + Math.random().toString(36).slice(2);
     setDl({ id, name: f.filename, done: 0, total: null });
     try {
-      const r = await api.download(id, f.fileurl, dir ?? "", folder, f.filename, dlMode, f.timemodified, force);   // empty dir = default folder; changing it is done in Settings
-      notify(r.reused ? "Opened saved copy of " + f.filename : "Downloaded " + f.filename); refreshSaved();
+      const r = await api.download(id, f.fileurl, dir ?? "", folder, f.filename, dlMode, f.timemodified, force, open);   // empty dir = default folder; changing it is done in Settings
+      notify((r.reused ? (open ? "Opened saved copy of " : "Already saved: ") : "Downloaded ") + f.filename); refreshSaved();
     } catch (e) { notify("Download failed: " + (api.isOffline() ? "you're offline." : e)); }
     finally { dlBusy.current.delete(key); setTimeout(() => setDl((d) => (d?.id === id ? null : d)), 400); }
   };
@@ -402,14 +403,13 @@ function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMo
     if (files.length) return files.map((f) => {
       const savedPath = saved.get(folderOf(f, m.id) + "::" + f.filename);
       const isSaved = savedPath !== undefined;
-      const isHtml = isHtmlFile(f) && sameOrigin(site, f.fileurl);
       return (
-        <div className="item" role="button" key={m.id + (f.filepath ?? "") + f.filename} onClick={() => getFile(f, false, m.id)}>
+        <div className="item" role="button" key={m.id + (f.filepath ?? "") + f.filename} onClick={() => getFile(f, false, m.id)}
+          onMouseDown={(e) => { if (middleDownload && e.button === 1) e.preventDefault(); }}   // no autoscroll
+          onAuxClick={(e) => { if (middleDownload && e.button === 1) getFile(f, false, m.id, false); }}>
           <span className="ico"><Icon n={modIcon(m.modname)} /></span>
           <span className="grow">{m.modname === "folder" ? `${m.name} / ${f.filename}` : m.name}<small>{f.filename} · {size(f.filesize)}{isSaved ? " · saved" : ""}</small></span>
-          {isSaved || isHtml
-            ? <button className="icon" title="Options" onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setMenu({ f, g: m.id, path: savedPath, x: window.innerWidth - r.right, y: r.bottom + 4 }); }}><Icon n="dots" /></button>
-            : <Icon n="down" />}
+          <button className="icon" title="Options" onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setMenu({ f, g: m.id, path: savedPath, x: window.innerWidth - r.right, y: r.bottom + 4 }); }}><Icon n="dots" /></button>
         </div>);
     });
     const isUrl = m.modname === "url"; const target = isUrl ? m.contents?.[0]?.fileurl ?? m.url : m.url ?? `${site}/mod/${m.modname}/view.php?id=${m.id}`;
@@ -427,6 +427,7 @@ function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMo
       {!closed[s.id] && renderMods(s.modules)}
     </section>))}
     {menu && <div className="menu" style={{ position: "fixed", top: menu.y, right: menu.x }} onClick={(e) => e.stopPropagation()}>
+      <button onClick={() => getFile(menu.f, false, menu.g, false)}><Icon n="down" s={16} />Download only</button>
       {isHtmlFile(menu.f) && sameOrigin(site, menu.f.fileurl) && <button onClick={() => { setMenu(null); api.openWeb(menu.f.fileurl); }}><Icon n="ext" s={16} />Open in browser</button>}
       {menu.path && <>
         <button className="desk" onClick={() => { setMenu(null); api.revealFile(menu.path!).catch((e) => notify(String(e))); }}><Icon n="folder" s={16} />Show in folder</button>
@@ -619,6 +620,18 @@ const INTERNAL_LINKS: [boolean, string, string][] = [
   [false, "Open in your browser", "Every Moodle link opens in the system browser."],
 ];
 
+const MIDDLE_DOWNLOAD: [boolean, string, string][] = [
+  [true, "Download only", "A middle click saves the file without opening it."],
+  [false, "Do nothing", "Middle clicks on files are ignored."],
+];
+
+type Sort = "name" | "size" | "date";
+const SORTS: [Sort, string, string][] = [
+  ["name", "Name", "A to Z within each course."],
+  ["size", "Size", "Largest files first."],
+  ["date", "Newest", "Most recently downloaded first."],
+];
+
 function About() {
   const [version, setVersion] = useState("");
   useEffect(() => { getVersion().then(setVersion).catch(() => {}); }, []);
@@ -637,9 +650,11 @@ function About() {
   </div>);
 }
 
-function Settings({ user, site, signOut, dir, pick, reset, mode, setMode, notify, theme, setTheme, contrast, setContrast, updateMode, setUpdateMode, checkNow, checking, canUpdate, accent, setAccent, assignPages, setAssignPages, internalLinks, setInternalLinks }: { user: string; site: string; signOut: () => void; dir: string | null; pick: () => Promise<string | null>; reset: () => void; mode: api.DlMode; setMode: (m: api.DlMode) => void; notify: (m: string) => void; theme: Theme; setTheme: (t: Theme) => void; contrast: Contrast; setContrast: (c: Contrast) => void; updateMode: api.UpdateMode; setUpdateMode: (m: api.UpdateMode) => void; checkNow: () => void; checking: boolean; canUpdate: boolean; accent: string; setAccent: (a: string) => void; assignPages: boolean; setAssignPages: (v: boolean) => void; internalLinks: boolean; setInternalLinks: (v: boolean) => void }) {
+function Settings({ user, site, signOut, dir, pick, reset, mode, setMode, notify, theme, setTheme, contrast, setContrast, updateMode, setUpdateMode, checkNow, checking, canUpdate, accent, setAccent, assignPages, setAssignPages, internalLinks, setInternalLinks, middleDownload, setMiddleDownload }: { user: string; site: string; signOut: () => void; dir: string | null; pick: () => Promise<string | null>; reset: () => void; mode: api.DlMode; setMode: (m: api.DlMode) => void; notify: (m: string) => void; theme: Theme; setTheme: (t: Theme) => void; contrast: Contrast; setContrast: (c: Contrast) => void; updateMode: api.UpdateMode; setUpdateMode: (m: api.UpdateMode) => void; checkNow: () => void; checking: boolean; canUpdate: boolean; accent: string; setAccent: (a: string) => void; assignPages: boolean; setAssignPages: (v: boolean) => void; internalLinks: boolean; setInternalLinks: (v: boolean) => void; middleDownload: boolean; setMiddleDownload: (v: boolean) => void }) {
   const [tab, setTab] = useState<(typeof SETTINGS_TABS)[number][0]>("general");
   const [files, setFiles] = useState<api.DlEntry[] | null>(null); const [confirm, setConfirm] = useState<string | null>(null);
+  const [sort, setSort] = useState<Sort>((localStorage.getItem("dlSort") as Sort) || "name");
+  const changeSort = (v: Sort) => { localStorage.setItem("dlSort", v); setSort(v); };
   const reload = () => api.listDownloads().then(setFiles).catch(() => setFiles([]));
   useEffect(() => { reload(); }, []);
   const [def, setDef] = useState<string | null>(null); useEffect(() => { api.defaultDownloadDir().then(setDef).catch(() => {}); }, []);
@@ -648,6 +663,9 @@ function Settings({ user, site, signOut, dir, pick, reset, mode, setMode, notify
   const ask = (key: string, run: () => void) => { if (confirm === key) run(); else { setConfirm(key); setTimeout(() => setConfirm(null), 4000); } };
   const byCourse = new Map<string, api.DlEntry[]>();
   (files ?? []).forEach((f) => { const g = f.course.split("/")[0]; byCourse.set(g, [...(byCourse.get(g) ?? []), f]); });
+  const groups = [...byCourse].sort(([a], [b]) => a.localeCompare(b));
+  const cmp = (a: api.DlEntry, b: api.DlEntry) => sort === "size" ? b.size - a.size : sort === "date" ? b.at - a.at : a.name.localeCompare(b.name);
+  groups.forEach(([, l]) => l.sort(cmp));
   const sum = (l: api.DlEntry[]) => l.reduce((a, f) => a + f.size, 0);
   const plural = (n: number) => `${n} file${n === 1 ? "" : "s"}`;
   return (
@@ -694,11 +712,15 @@ function Settings({ user, site, signOut, dir, pick, reset, mode, setMode, notify
           {shownDir && <button className="btn" onClick={() => api.openLocal(shownDir).catch(() => notify("That folder doesn't exist yet"))}>Open folder</button>}</div>
         <div className="setrow col"><b>When a file is already saved</b>
           <div className="choices">{MODES.map(([k, t, d]) => <button key={k} className={mode === k ? "choice on" : "choice"} onClick={() => setMode(k)}><b>{t}</b><small>{d}</small></button>)}</div></div>
+        <div className="setrow col desk"><b>Middle-click a file</b>
+          <div className="choices">{MIDDLE_DOWNLOAD.map(([k, t, d]) => <button key={String(k)} aria-pressed={middleDownload === k} className={middleDownload === k ? "choice on" : "choice"} onClick={() => setMiddleDownload(k)}><b>{t}</b><small>{d}</small></button>)}</div></div>
       </section>
       <section className="sec">
         <div className="sechead static"><span>Saved files</span><span className="muted">{files ? `${plural(files.length)} · ${size(sum(files))}` : ""}</span></div>
+        <div className="setrow col"><b>Sort by</b>
+          <div className="choices">{SORTS.map(([k, t, d]) => <button key={k} aria-pressed={sort === k} className={sort === k ? "choice on" : "choice"} onClick={() => changeSort(k)}><b>{t}</b><small>{d}</small></button>)}</div></div>
         {files && !files.length && <div className="setrow muted">Nothing downloaded yet.</div>}
-        {[...byCourse].map(([course, list]) => (
+        {groups.map(([course, list]) => (
           <div key={course} className="coursegroup">
             <div className="setrow"><div className="grow"><b>{course}</b><small>{plural(list.length)} · {size(sum(list))}</small></div>
               <button className="btn danger" onClick={() => ask("c:" + course, () => del(list.map((f) => f.path)))}>{confirm === "c:" + course ? "Click to confirm" : "Clear course"}</button></div>
@@ -770,6 +792,8 @@ export default function App() {
   const changeAssignPages = (v: boolean) => { localStorage.setItem("assignPages", v ? "on" : "off"); setAssignPages(v); };
   const [internalLinks, setInternalLinks] = useState(localStorage.getItem("internalLinks") !== "off");
   const changeInternalLinks = (v: boolean) => { localStorage.setItem("internalLinks", v ? "on" : "off"); setInternalLinks(v); };
+  const [middleDownload, setMiddleDownload] = useState(localStorage.getItem("middleDownload") !== "off");
+  const changeMiddleDownload = (v: boolean) => { localStorage.setItem("middleDownload", v ? "on" : "off"); setMiddleDownload(v); };
   const [theme, setThemeState] = useState<Theme>((localStorage.getItem("theme") as Theme) || "system");
   const [contrast, setContrastState] = useState<Contrast>(() => { const v = localStorage.getItem("contrast"); return v === "on" || v === "high" ? "on" : v === "off" ? "off" : "system"; });   // System by default
   const [osHigh, setOsHigh] = useState(() => matchMedia("(prefers-contrast: more)").matches);
@@ -1101,14 +1125,15 @@ export default function App() {
           <div className="banner" style={{ background: tone(open_.id) }}>{open_.shortname}</div>
           <CourseView key={open_.id} dlMode={dlMode} c={open_} site={session.site} token={session.token} dir={dir} notify={notify} onLink={handleLink}
             onHtml={(title, url) => setOverlay({ kind: "html", title, url })} onForum={(title, id) => setOverlay({ kind: "forum", title, id })} setDl={setDl} onSubmitted={() => setDueTick((n) => n + 1)}
-            assignPages={assignPages} onAssign={(a, course, group) => setOverlay({ kind: "assign", title: a.name, assign: a, course, group })} />
+            assignPages={assignPages} onAssign={(a, course, group) => setOverlay({ kind: "assign", title: a.name, assign: a, course, group })} middleDownload={middleDownload} />
         </>) : explore ? (
           <Explore site={session.site} token={session.token} enrolled={enrolledIds} notify={notify} onLink={handleLink}
             onJoined={(c) => { setExplore(false); setStack([c]); setEnrolledIds((s) => new Set(s).add(c.id)); load(filter); }} />
         ) : settingsOpen ? (
           <Settings user={info?.fullname ?? ""} site={info?.sitename ?? ""} signOut={signOut} dir={dir} pick={pick} reset={resetDir} mode={dlMode} setMode={changeMode} notify={notify} theme={theme} setTheme={setTheme} contrast={contrast} setContrast={setContrast}
             updateMode={updateMode} setUpdateMode={setUpdateMode} checkNow={() => void checkForUpdate(true)} checking={updatePhase === "checking"} canUpdate={canSelfUpdate} accent={accent} setAccent={setAccent}
-            assignPages={assignPages} setAssignPages={changeAssignPages} internalLinks={internalLinks} setInternalLinks={changeInternalLinks} />
+            assignPages={assignPages} setAssignPages={changeAssignPages} internalLinks={internalLinks} setInternalLinks={changeInternalLinks}
+            middleDownload={middleDownload} setMiddleDownload={changeMiddleDownload} />
         ) : (<>
           <div className="bar"><h1>My courses</h1><input className="search" placeholder="Search courses…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
           {!!due.length && <section className="duecard" aria-label="Upcoming assignments">

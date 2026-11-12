@@ -640,7 +640,9 @@ async fn download_file(
     mode: String,
     modified: Option<u64>,
     force: Option<bool>,
+    open: Option<bool>,
 ) -> Result<Value, String> {
+    let open = open.unwrap_or(true);
     let s = state
         .session
         .lock()
@@ -688,7 +690,7 @@ async fn download_file(
         if up_to_date {
             // adopt a saved copy we don't track yet, so it can be re-downloaded or cleared later
             track(&app, &p, &subdir, &filename, true);
-            open_saved(&app, &p)?;
+            if open { open_saved(&app, &p)?; }
             return Ok(serde_json::json!({ "path": p, "reused": true }));
         }
     }
@@ -710,7 +712,7 @@ async fn download_file(
             // without a connection, a copy saved earlier is still useful
             if path.is_file() {
                 track(&app, &p, &subdir, &filename, true);
-                open_saved(&app, &p)?;
+                if open { open_saved(&app, &p)?; }
                 return Ok(serde_json::json!({ "path": p, "reused": true }));
             }
             return Err(net_err(e));
@@ -778,7 +780,7 @@ async fn download_file(
     // remember what we saved, so "clear downloads" only ever touches our own files
     track(&app, &p, &subdir, &filename, false);
 
-    open_saved(&app, &p)?;
+    if open { open_saved(&app, &p)?; }
     Ok(serde_json::json!({ "path": p, "reused": false }))
 }
 
