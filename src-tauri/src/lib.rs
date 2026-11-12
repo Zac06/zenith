@@ -56,24 +56,60 @@ struct AppState {
     sso_error: Mutex<Option<String>>,
 }
 
-/// Where the login session is kept: the OS keychain (Windows, macOS, iOS, Linux).
+/// Where the login session is kept: the OS keychain (Windows, macOS, iOS, Linux), or, when there is no usable
+/// keychain backend (a bare Linux desktop with no Secret Service), a private file in the app's config folder.
+/// The file is readable by the user alone (0600) but not encrypted; a keychain password would be no better,
+/// since the app would have to remember it anyway.
 #[cfg(not(target_os = "android"))]
 mod secret {
-    use tauri::AppHandle;
+    use tauri::{AppHandle, Manager};
     fn entry() -> Result<keyring::Entry, String> {
         keyring::Entry::new("zenith", "session").map_err(|e| e.to_string())
     }
-    pub fn set(_: &AppHandle, v: &str) {
-        if let Ok(e) = entry() {
-            let _ = e.set_password(v);
+    fn file(app: &AppHandle) -> Option<std::path::PathBuf> {
+        app.path().app_config_dir().ok().map(|d| d.join("session.json"))
+    }
+    pub fn load_file(p: &std::path::Path) -> Option<String> {
+        std::fs::read_to_string(p).ok().filter(|s| !s.is_empty())
+    }
+    pub fn save_file(p: &std::path::Path, v: &str) -> std::io::Result<()> {
+        if let Some(d) = p.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(0o600); // the token is a credential: keep it out of other users' reach
+        }
+        use std::io::Write;
+        o.open(p)?.write_all(v.as_bytes())
+    }
+    pub fn set(app: &AppHandle, v: &str) {
+        if entry().is_ok_and(|e| e.set_password(v).is_ok()) {
+            // a fallback file from when the keychain was unavailable must not survive as a second copy
+            if let Some(p) = file(app) {
+                let _ = std::fs::remove_file(p);
+            }
+            return;
+        }
+        if let Some(p) = file(app) {
+            if let Err(e) = save_file(&p, v) {
+                eprintln!("could not save the login: {e}");
+            }
         }
     }
-    pub fn get(_: &AppHandle) -> Option<String> {
-        entry().ok()?.get_password().ok()
+    pub fn get(app: &AppHandle) -> Option<String> {
+        // the file only exists because the keychain failed, so it holds the newest login
+        file(app).and_then(|p| load_file(&p)).or_else(|| entry().ok()?.get_password().ok())
     }
-    pub fn del(_: &AppHandle) {
+    pub fn del(app: &AppHandle) {
         if let Ok(e) = entry() {
             let _ = e.delete_credential();
+        }
+        if let Some(p) = file(app) {
+            let _ = std::fs::remove_file(p);
         }
     }
 }
@@ -1423,5 +1459,21 @@ mod tests {
         assert!(require_https("https://moodle.uni.edu").is_ok());
         assert!(require_https("http://moodle.uni.edu").is_err());
         assert!(require_https("ftp://moodle.uni.edu").is_err());
+    }
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn session_fallback_file_is_private() {
+        let dir = std::env::temp_dir().join(format!("zenith-secret-{}", std::process::id()));
+        let p = dir.join("session.json");
+        assert_eq!(super::secret::load_file(&p), None);
+        super::secret::save_file(&p, "{\"token\":\"new\"}").unwrap();
+        super::secret::save_file(&p, "{\"token\":\"newer\"}").unwrap(); // no stale tail
+        assert_eq!(super::secret::load_file(&p), Some("{\"token\":\"newer\"}".into()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
