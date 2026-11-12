@@ -18,6 +18,7 @@ const P: Record<string, string> = {
   check: "M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11",
   folder: "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z",
   book: "M4 19.5A2.5 2.5 0 0 1 6.5 17H20V2H6.5A2.5 2.5 0 0 0 4 4.5z",
+  notes: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M8 13h8 M8 17h5",
   down: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3",
   back: "M19 12H5 M12 19l-7-7 7-7",
   out: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4 M16 17l5-5-5-5 M21 12H9",
@@ -25,6 +26,7 @@ const P: Record<string, string> = {
   dots: "M12 12h.01 M19 12h.01 M5 12h.01",
   x: "M18 6L6 18 M6 6l12 12",
   search: "M21 21l-4.35-4.35 M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z",
+  smile: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M8 14s1.5 2 4 2 4-2 4-2 M9 9h.01 M15 9h.01",
   sliders: "M4 21v-7 M4 10V3 M12 21v-9 M12 8V3 M20 21v-5 M20 12V3 M1 14h6 M9 8h6 M17 16h6",
   trash: "M3 6h18 M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6 M10 11v6 M14 11v6 M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2",
   star: "M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z",
@@ -36,7 +38,7 @@ const P: Record<string, string> = {
 const Icon = ({ n, s = 18 }: { n: string; s?: number }) => (
   <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d={P[n]} /></svg>
 );
-const modIcon = (m: string) => ({ resource: "file", url: "link", forum: "chat", folder: "folder", assign: "check", quiz: "check", choice: "check", feedback: "check" } as any)[m] ?? "book";
+const modIcon = (m: string) => ({ resource: "file", url: "link", forum: "chat", chat: "chat", folder: "folder", assign: "check", quiz: "check", choice: "check", feedback: "check" } as any)[m] ?? "book";
 const hue = (id: number) => (id * 47) % 360;
 const size = (b: number) => (b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1e3)) + " KB");
 const initials = (n: string) =>
@@ -72,7 +74,7 @@ if (import.meta.env.DEV) {
 }
 // Same-site Moodle links the app can show without fetching a full page. A forum link may carry the forum
 // instance (f=) or the course module (id=); the other activities only take a course module id.
-type ModLink = { kind: "course" | "forum" | "assign"; id: number; instance?: boolean };
+type ModLink = { kind: "course" | "forum" | "assign" | "chat"; id: number; instance?: boolean };
 const moodleLink = (u: URL, site: string): ModLink | null => {
   if (u.origin !== new URL(site).origin) return null;
   const n = (k: string) => Number(u.searchParams.get(k)) || 0;
@@ -82,11 +84,13 @@ const moodleLink = (u: URL, site: string): ModLink | null => {
     return n("id") ? { kind: "forum", id: n("id") } : null;
   }
   if (u.pathname.endsWith("/mod/assign/view.php")) return n("id") ? { kind: "assign", id: n("id") } : null;
+  if (u.pathname.endsWith("/mod/chat/view.php")) return n("id") ? { kind: "chat", id: n("id") } : null;
   return null;
 };
 if (import.meta.env.DEV) {
   console.assert(moodleLink(new URL("https://m.uni.edu/mod/assign/view.php?id=7"), "https://m.uni.edu")?.id === 7, "assignment link is internal");
   console.assert(moodleLink(new URL("https://m.uni.edu/mod/forum/view.php?f=3"), "https://m.uni.edu")?.instance === true, "forum instance link is internal");
+  console.assert(moodleLink(new URL("https://m.uni.edu/mod/chat/view.php?id=9"), "https://m.uni.edu")?.kind === "chat", "chat link is internal");
   console.assert(moodleLink(new URL("https://other.edu/course/view.php?id=1"), "https://m.uni.edu") === null, "foreign links stay external");
   console.assert(webserviceUrl(new URL("https://m.uni.edu/pluginfile.php/1/mod_resource/x.html")) === "https://m.uni.edu/webservice/pluginfile.php/1/mod_resource/x.html", "html files use the token endpoint");
 }
@@ -353,7 +357,7 @@ function AssignRow({ a, site, token, onLink, getFile, onSubmitted, onOpen, page,
 
 type Dl = { id: string; name: string; done: number; total: number | null };
 
-function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMode, setDl, onSubmitted, assignPages, onAssign, middleDownload }: { c: api.Course; site: string; token: string; dir: string | null; notify: (m: string) => void; onLink: (href: string) => void; onHtml: (title: string, url: string) => void; onForum: (title: string, id: number) => void; dlMode: api.DlMode; setDl: React.Dispatch<React.SetStateAction<Dl | null>>; onSubmitted?: () => void; assignPages: boolean; onAssign: (a: api.Assign, course: string, group: number) => void; middleDownload: boolean }) {
+function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, onChat, dlMode, setDl, onSubmitted, assignPages, onAssign, middleDownload }: { c: api.Course; site: string; token: string; dir: string | null; notify: (m: string) => void; onLink: (href: string) => void; onHtml: (title: string, url: string) => void; onForum: (title: string, id: number) => void; onChat: (title: string, id: number, cmid: number, courseId: number) => void; dlMode: api.DlMode; setDl: React.Dispatch<React.SetStateAction<Dl | null>>; onSubmitted?: () => void; assignPages: boolean; onAssign: (a: api.Assign, course: string, group: number) => void; middleDownload: boolean }) {
   const [secs, setSecs] = useState<api.Section[] | null>(null); const [err, setErr] = useState(""); const [closed, setClosed] = useState<Record<number, boolean>>({});
   useEffect(() => {
     setSecs(null); setErr("");
@@ -427,6 +431,12 @@ function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, dlMo
       <button className="item" key={m.id} onClick={() => onForum(m.name, m.instance!)}>
         <span className="ico"><Icon n="chat" /></span>
         <span className="grow">{m.name}<small>latest posts · replies open in your browser</small></span>
+        <Icon n="chev" s={16} />
+      </button>);
+    if (m.modname === "chat" && m.instance) return (
+      <button className="item" key={m.id} onClick={() => onChat(m.name, m.instance!, m.id, c.id)}>
+        <span className="ico"><Icon n="chat" /></span>
+        <span className="grow">{m.name}<small>live chat</small></span>
         <Icon n="chev" s={16} />
       </button>);
     const files = (m.contents ?? []).filter((f) => f.type === "file");
@@ -503,6 +513,286 @@ function ForumPage({ title, id, site, token, onLink, onClose }: { title: string;
           <div className="summary"><button className="btn" onClick={() => api.openWeb(`${site}/mod/forum/discuss.php?d=${d.id}`)}>{d.replies ? "Read the replies" : "Open in browser"}</button></div>
         </section>))}</div>}
   </>);
+}
+
+// A small, dependency-free emoji set: enough for chat, nothing to download.
+const EMOJI = "😀 😃 😄 😁 😆 😅 😂 🙂 🙃 😉 😊 😇 🥰 😍 😘 😋 😜 🤪 🤗 🤔 😐 😴 😷 🤒 👍 👎 👏 🙌 🙏 💪 🔥 ✨ 🎉 ❤️ 😢 😭 😤 🤯 😱 😬 🤝 ✅ ❌ ⏰ 📚".split(" ");
+// A message box grows with its text up to five lines, then scrolls. scrollHeight includes the padding but not the border.
+const growBox = (el: HTMLTextAreaElement) => {
+  el.style.height = "auto";
+  const s = getComputedStyle(el), lh = parseFloat(s.lineHeight) || 20;
+  const pad = parseFloat(s.paddingTop) + parseFloat(s.paddingBottom) + parseFloat(s.borderTopWidth) + parseFloat(s.borderBottomWidth);
+  el.style.height = Math.min(el.scrollHeight, Math.round(lh * 5 + pad)) + "px";
+};
+function EmojiPicker({ onPick }: { onPick: (e: string) => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="emojiwrap">
+      <button className="icon" type="button" title="Emoji" aria-label="Emoji" onClick={() => setOpen((v) => !v)}><Icon n="smile" /></button>
+      {open && <div className="emojis">{EMOJI.map((e) => <button key={e} type="button" onClick={() => onPick(e)}>{e}</button>)}</div>}
+    </div>
+  );
+}
+
+// A live chat room plus its past sessions. Messages carry only author ids, so names are looked up in
+// batches; the room session (chatsid) expires when it stops being polled and is renewed on the next poll.
+function ChatPage({ title, id, cmid, courseId, me, site, token, onLink, onClose }: { title: string; id: number; cmid: number; courseId: number; me: number; site: string; token: string; onLink: (href: string) => void; onClose: () => void }) {
+  const [tab, setTab] = useState<"chat" | "history">("chat");
+  const [msgs, setMsgs] = useState<api.ChatMessage[]>([]);
+  const [names, setNames] = useState(new Map<number, string>());   // names are cosmetic: a miss shows "User 12"
+  const [text, setText] = useState("");
+  const [err, setErr] = useState("");   // the room could not be opened at all
+  const [note, setNote] = useState(""); // temporary: reconnecting, or a message was refused
+  const [sending, setSending] = useState(false);
+  const [online, setOnline] = useState(false);
+  const [sessions, setSessions] = useState<api.ChatSession[] | null>(null);
+  const [histErr, setHistErr] = useState("");
+  const [openSession, setOpenSession] = useState<api.ChatSession | null>(null);
+  const [histMsgs, setHistMsgs] = useState<api.ChatMessage[] | null>(null);
+  const sid = useRef<string | null>(null), last = useRef(0), quiet = useRef(false), inFlight = useRef(false);
+  const box = useRef<HTMLDivElement>(null), atBottom = useRef(true), refresh = useRef<() => void>(() => {});
+  const ta = useRef<HTMLTextAreaElement>(null);
+  const asked = useRef(new Set<number>());
+
+  useEffect(() => {
+    let dead = false, timer = 0;
+    const poll = async () => {
+      if (dead || quiet.current || document.hidden || !sid.current) return;
+      quiet.current = true;
+      try {
+        const r = await api.chatLatest(sid.current, last.current);
+        if (dead) return;
+        last.current = r.last || last.current;
+        setOnline(true); setNote("");
+        if (r.messages.length) setMsgs((cur) => api.mergeChat(cur, r.messages));
+      } catch {
+        // silence ends the room session; logging in again gives a new one and the next tick fetches
+        if (!dead) setOnline(false);
+        try { sid.current = await api.chatLogin(id); last.current = 0; if (!dead) setOnline(true); }
+        catch { if (!dead) { setOnline(false); setNote(api.isOffline() ? "You're offline." : "Reconnecting…"); } }
+      } finally { quiet.current = false; }
+    };
+    refresh.current = () => void poll();
+    api.chatView(id);
+    api.chatLogin(id).then((v) => {
+      if (dead) return;
+      sid.current = v; setOnline(true); setNote("");
+      void poll();
+      timer = window.setInterval(poll, 4000);
+    }).catch((e) => { if (!dead) setErr(api.isOffline() ? "Chat needs a connection." : String(e).replace(/^Error: /, "")); });
+    return () => { dead = true; clearInterval(timer); sid.current = null; };
+  }, [id]);
+
+  useEffect(() => {
+    const ids = [...new Set([...msgs, ...(histMsgs ?? [])].map((m) => m.userid))];
+    // a name the site refuses to share stays unknown instead of being asked for again on every message
+    const unknown = ids.filter((u) => u && !names.has(u) && !asked.current.has(u));
+    if (!unknown.length) return;
+    unknown.forEach((u) => asked.current.add(u));
+    api.chatNames(courseId, unknown).then((m) => setNames((cur) => new Map([...cur, ...m]))).catch(() => {});
+  }, [msgs, histMsgs, names, courseId]);
+
+  useEffect(() => { if (atBottom.current && box.current) box.current.scrollTop = box.current.scrollHeight; }, [msgs]);
+  useEffect(() => { if (ta.current) growBox(ta.current); }, [text]);
+  useEffect(() => {
+    if (tab !== "history" || sessions !== null) return;
+    api.chatSessions(id).then(setSessions).catch((e) => { setSessions([]); setHistErr(String(e).replace(/^Error: /, "")); });
+  }, [tab, id, sessions]);
+
+  const send = async () => {
+    const t = text.trim();
+    if (!t || inFlight.current || !sid.current) return;
+    inFlight.current = true; setSending(true); setNote("");
+    try {
+      try {
+        await api.chatSend(sid.current, t);
+      } catch (e) {
+        // only a room that logged itself out is worth retrying; retrying anything else could post twice
+        if (!/\[(?:notlogged|cantlogin)\]/.test(String(e))) throw e;
+        sid.current = await api.chatLogin(id);
+        await api.chatSend(sid.current, t);
+      }
+      setText(""); last.current = 0; refresh.current();
+    } catch (e) {
+      setNote(String(e).replace(/^Error: /, ""));
+    } finally { inFlight.current = false; setSending(false); }
+  };
+  const pickEmoji = (e: string) => {
+    const el = ta.current, at = el?.selectionStart ?? text.length, to = el?.selectionEnd ?? at;
+    setText(text.slice(0, at) + e + text.slice(to));
+    requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(at + e.length, at + e.length); });
+  };
+  const openHistory = (s: api.ChatSession) => {
+    setOpenSession(s); setHistMsgs(null); setHistErr("");
+    api.chatSessionMessages(id, s.start, s.end).then(setHistMsgs)
+      .catch((e) => { setHistMsgs([]); setHistErr(String(e).replace(/^Error: /, "")); });
+  };
+  const row = (m: api.ChatMessage, raw = false) => {
+    if (m.system) return <div className="chatmsg sys" key={m.id}>{plain(m.message)}</div>;
+    const mine = m.userid === me;
+    return (
+      <div className={"chatmsg" + (mine ? " mine" : "")} key={m.id}>
+        {!mine && <b>{names.get(m.userid) ?? "User " + m.userid}</b>}
+        {/* live messages arrive formatted; past-session rows come as raw text (a Moodle quirk) */}
+        {raw ? <div className="bubble raw">{m.message}</div> : <div className="bubble"><Html site={site} html={m.message} token={token} onLink={onLink} /></div>}
+        <small>{m.timestamp ? new Date(m.timestamp * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : ""}</small>
+      </div>
+    );
+  };
+
+  return (<div className="chatpage">
+    <div className="bar">
+      <button className="icon" onClick={onClose} title="Back"><Icon n="back" /></button><h1>{title}</h1>
+      <span className={"chaton" + (online ? " on" : "")}>{err ? "Unavailable" : online ? "Connected" : api.isOffline() ? "Offline" : "Connecting…"}</span>
+    </div>
+    {err ? <div className="sec pad"><p>{err}</p><button className="primary" onClick={() => api.openWeb(`${site}/mod/chat/view.php?id=${cmid}`)}>Open in browser</button></div> : <>
+      <div className="tabs">
+        <button className={tab === "chat" ? "tab on" : "tab"} onClick={() => setTab("chat")}>Chat</button>
+        <button className={tab === "history" ? "tab on" : "tab"} onClick={() => setTab("history")}>Past sessions</button>
+      </div>
+      {tab === "chat" ? <div className="chatfill">
+        <div className="msgs" ref={box} onScroll={() => { const el = box.current; if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
+          {!msgs.length && <p className="muted">{online ? "No messages yet. Say hello." : "Connecting…"}</p>}
+          {msgs.map((m) => row(m))}
+        </div>
+        {note && <p className="muted small2">{note}</p>}
+        <div className="composer">
+          <textarea ref={ta} rows={1} value={text} placeholder="Message…" aria-label="Message" onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} />
+          <EmojiPicker onPick={pickEmoji} />
+          <button className="primary" disabled={!text.trim() || sending || !sid.current} onClick={() => void send()}>{sending ? "Sending…" : "Send"}</button>
+        </div>
+      </div> : openSession ? <>
+        <div className="bar"><button className="icon" onClick={() => { setOpenSession(null); setHistMsgs(null); }} title="Back to sessions"><Icon n="back" /></button><h1>{when(openSession.start)}</h1></div>
+        {histErr ? <p className="msg pad">{histErr}</p>
+          : !histMsgs ? <p className="muted pad">Loading…</p>
+          : <div className="msgs">{histMsgs.length ? histMsgs.map((m) => row(m, true)) : <p className="muted">No messages in this session.</p>}</div>}
+      </> : <>
+        {histErr ? <div className="sec pad"><p>{histErr}</p><button className="primary" onClick={() => api.openWeb(`${site}/mod/chat/report.php?id=${cmid}`)}>Open in browser</button></div>
+          : !sessions ? <p className="muted pad">Loading…</p>
+          : !sessions.length ? <p className="muted pad">No past sessions.</p>
+          : <div className="stack"><section className="sec">{sessions.map((s) => (
+            <button className="item" key={s.start} onClick={() => openHistory(s)}>
+              <span className="ico"><Icon n="chat" /></span>
+              <span className="grow">{when(s.start)}<small>{when(s.end)} · {s.users.reduce((n, u) => n + u.messagecount, 0)} messages{s.complete ? "" : " · ongoing"}</small></span>
+              <Icon n="chev" s={16} />
+            </button>))}</section></div>}
+      </>}
+    </>}
+  </div>);
+}
+
+// Moodle Messages: the conversation list, plus one conversation at a time. Reading the room marks it read on the
+// server; the room polls for new messages with timefrom, which is inclusive, so results are merged by id.
+function MessagesPage({ me, site, onOpen }: { me: number; site: string; onOpen: (c: api.Conversation) => void }) {
+  const [convs, setConvs] = useState<api.Conversation[] | null>(null);
+  const [err, setErr] = useState("");
+  const load = useCallback(() => {
+    if (!me) return;
+    api.conversations(me).then((v) => { setConvs(v); setErr(""); })
+      .catch((e) => { setErr(api.isOffline() ? "Messages need a connection." : String(e).replace(/^Error: /, "")); setConvs((c) => c ?? []); });
+  }, [me]);
+  useEffect(() => {
+    load();
+    const t = window.setInterval(() => { if (!document.hidden) load(); }, 15000);
+    return () => clearInterval(t);
+  }, [load]);
+  return (<>
+    <div className="bar"><h1>Messages</h1></div>
+    {err && !convs?.length ? <div className="sec pad"><p>{err}</p><button className="primary" onClick={() => api.openWeb(`${site}/message/index.php`)}>Open in browser</button></div>
+      : !convs ? <p className="muted pad">Loading…</p>
+      : !convs.length ? <p className="muted pad">No conversations yet.</p>
+      : <div className="stack"><section className="sec">{convs.map((c) => (
+        <button className="item" key={c.id} onClick={() => onOpen(c)}>
+          <span className="avatar">{initials(api.convName(c, me))}</span>
+          <span className="grow">{api.convName(c, me)}<small>{c.last ? plain(c.last.text).slice(0, 100) : "No messages yet"}</small></span>
+          {c.unread > 0 && <span className="unread" title={`${c.unread} unread`}>{c.unread}</span>}
+          <Icon n="chev" s={16} />
+        </button>))}</section></div>}
+  </>);
+}
+
+function ConversationView({ c, me, site, token, onLink, onBack }: { c: api.Conversation; me: number; site: string; token: string; onLink: (href: string) => void; onBack: () => void }) {
+  const [msgs, setMsgs] = useState<api.Msg[]>([]);
+  const [names, setNames] = useState(() => new Map(c.members.map((m) => [m.id, m.fullname] as const)));
+  const [text, setText] = useState("");
+  const [note, setNote] = useState("");
+  const [sending, setSending] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const last = useRef(0), busy = useRef(false), sent = useRef(false);
+  const box = useRef<HTMLDivElement>(null), atBottom = useRef(true), ta = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    let dead = false, timer = 0;
+    const take = (r: { messages: api.Msg[]; members: api.MsgUser[] }) => {
+      if (dead) return;
+      if (r.members.length) setNames((cur) => new Map([...cur, ...r.members.map((m) => [m.id, m.fullname] as const)]));
+      if (r.messages.length) {
+        setMsgs((cur) => api.mergeMsgs(cur, r.messages));
+        last.current = Math.max(last.current, ...r.messages.map((m) => m.time));
+        api.markRead(me, c.id);
+      }
+    };
+    const fetch = (first: boolean) => {
+      if (dead || busy.current || document.hidden) return;
+      busy.current = true;
+      api.conversationMessages(me, c.id, first ? 0 : last.current)
+        .then(take)
+        .catch((e) => { if (!dead && first) setNote(api.isOffline() ? "Messages need a connection." : String(e).replace(/^Error: /, "")); })
+        .finally(() => { busy.current = false; if (!dead && first) setLoaded(true); });
+    };
+    fetch(true);
+    timer = window.setInterval(() => fetch(false), 5000);
+    return () => { dead = true; clearInterval(timer); };
+  }, [c.id, me]);
+
+  useEffect(() => { if (atBottom.current && box.current) box.current.scrollTop = box.current.scrollHeight; }, [msgs]);
+  useEffect(() => { if (ta.current) growBox(ta.current); }, [text]);
+
+  const send = async () => {
+    const t = text.trim();
+    if (!t || sent.current) return;
+    sent.current = true; setSending(true); setNote("");
+    try {
+      const made = await api.sendMessage(c.id, t);
+      if (made.length) {
+        setMsgs((cur) => api.mergeMsgs(cur, made));
+        last.current = Math.max(last.current, ...made.map((m) => m.time));
+      }
+      setText("");
+    } catch (e) { setNote(String(e).replace(/^Error: /, "")); }
+    finally { sent.current = false; setSending(false); }
+  };
+  const pickEmoji = (e: string) => {
+    const el = ta.current, at = el?.selectionStart ?? text.length, to = el?.selectionEnd ?? at;
+    setText(text.slice(0, at) + e + text.slice(to));
+    requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(at + e.length, at + e.length); });
+  };
+  const row = (m: api.Msg) => {
+    const own = m.from === me;
+    return (
+      <div className={"chatmsg" + (own ? " mine" : "")} key={m.id}>
+        {!own && <b>{names.get(m.from) ?? "User " + m.from}</b>}
+        <div className="bubble"><Html site={site} html={m.text} token={token} onLink={onLink} /></div>
+        <small>{m.time ? new Date(m.time * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : ""}</small>
+      </div>
+    );
+  };
+
+  return (<div className="chatpage">
+    <div className="bar"><button className="icon" onClick={onBack} title="Back to messages"><Icon n="back" /></button><h1>{api.convName(c, me)}</h1>
+      {c.type === 2 && <span className="muted small2">{c.members.length} members</span>}</div>
+    <div className="msgs" ref={box} onScroll={() => { const el = box.current; if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
+      {!loaded && !msgs.length ? <p className="muted">Loading…</p> : !msgs.length ? <p className="muted">No messages yet. Say hello.</p> : msgs.map(row)}
+    </div>
+    {note && <p className="muted small2">{note}</p>}
+    <div className="composer">
+      <textarea ref={ta} rows={1} value={text} placeholder="Message…" aria-label="Message" onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} />
+      <EmojiPicker onPick={pickEmoji} />
+      <button className="primary" disabled={!text.trim() || sending} onClick={() => void send()}>{sending ? "Sending…" : "Send"}</button>
+    </div>
+  </div>);
 }
 
 const norm = (s: string) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
@@ -809,8 +1099,8 @@ function Setup({ theme, setTheme, contrast, setContrast, onDone }: { theme: Them
 }
 
 type Due = api.UpcomingAssign & { submitted: boolean | null };
-type Overlay = { kind: "html" | "forum" | "assign"; title: string; url?: string; id?: number; assign?: api.Assign; course?: string; group?: number };
-type View = { token: string; stack: api.Course[]; overlay: Overlay | null; settingsOpen: boolean; explore: boolean };
+type Overlay = { kind: "html" | "forum" | "assign" | "chat" | "conv"; title: string; url?: string; id?: number; assign?: api.Assign; course?: string; group?: number; cmid?: number; courseId?: number; conv?: api.Conversation };
+type View = { token: string; stack: api.Course[]; overlay: Overlay | null; settingsOpen: boolean; explore: boolean; messagesOpen: boolean };
 
 // Windows and X11 show a per-window icon; Wayland and macOS ignore it, so the error is dropped.
 async function tintWindowIcon(accent: string) {
@@ -864,6 +1154,7 @@ export default function App() {
   }, [theme, high, accent]);
   useEffect(() => { if (!api.isMobile()) tintWindowIcon(accent).catch(() => {}); }, [accent]);
   const [explore, setExplore] = useState(false); const [enrolledIds, setEnrolledIds] = useState<Set<number>>(new Set());
+  const [messagesOpen, setMessagesOpen] = useState(false);
   const [stack, setStack, back, clear] = useCourseStack<api.Course>(); const [q, setQ] = useState("");
   const open_ = stack[stack.length - 1] ?? null;
   const [dir, setDir] = useState(localStorage.getItem("dlDir")); const [toast, setToast] = useState("");
@@ -880,7 +1171,7 @@ export default function App() {
   // Browser history is the screen history: back/forward (buttons, Alt+Arrow, Android back) move through it.
   useLayoutEffect(() => {
     if (!session) return;
-    const view: View = { token: session.token, stack, overlay, settingsOpen, explore };
+    const view: View = { token: session.token, stack, overlay, settingsOpen, explore, messagesOpen };
     const key = JSON.stringify(view);
     if (restoringView.current) { restoringView.current = false; viewKey.current = key; return; }
     if (!viewKey.current) { history.replaceState({ view, i: 0 }, ""); hidx.current = 0; hmax.current = 0; viewKey.current = key; return; }
@@ -888,7 +1179,7 @@ export default function App() {
     hidx.current++; hmax.current = hidx.current;   // a push drops any forward entries
     history.pushState({ view, i: hidx.current }, "");
     viewKey.current = key;
-  }, [session, stack, overlay, settingsOpen, explore]);
+  }, [session, stack, overlay, settingsOpen, explore, messagesOpen]);
   useEffect(() => {
     const f = (e: PopStateEvent) => {
       const v = e.state?.view as View | undefined;
@@ -896,7 +1187,7 @@ export default function App() {
       if (!v || !session || v.token !== session.token) return;
       hidx.current = e.state?.i ?? 0;
       restoringView.current = true;
-      setStack(v.stack); setOverlay(v.overlay); setSettingsOpen(v.settingsOpen); setExplore(v.explore);
+      setStack(v.stack); setOverlay(v.overlay); setSettingsOpen(v.settingsOpen); setExplore(v.explore); setMessagesOpen(!!v.messagesOpen);
     };
     window.addEventListener("popstate", f);
     return () => window.removeEventListener("popstate", f);
@@ -1112,6 +1403,7 @@ export default function App() {
     try {
       const m = await api.courseModule(t.id);
       if (t.kind === "forum" && m.modname === "forum") { setOverlay({ kind: "forum", title: m.name, id: m.instance }); return; }
+      if (t.kind === "chat" && m.modname === "chat") { setOverlay({ kind: "chat", title: m.name, id: m.instance, cmid: m.id, courseId: m.course }); return; }
       if (t.kind === "assign" && m.modname === "assign") {
         if (!assignPages) { setOverlay(null); await openCourseById(m.course); return; }
         const a = (await api.courseAssignments(m.course)).find((x) => x.cmid === m.id);
@@ -1154,9 +1446,10 @@ export default function App() {
       <aside>
         <div className="brand">Zenith</div>
         <nav>
-          <button className={!explore && !settingsOpen ? "on" : ""} onClick={() => { setExplore(false); setSettingsOpen(false); setOverlay(null); clear(); }}><Icon n="book" />My courses</button>
-          <button className={explore ? "on" : ""} onClick={() => { setExplore(true); setSettingsOpen(false); setOverlay(null); clear(); }}><Icon n="search" />Explore</button>
-          <button className={settingsOpen ? "on" : ""} onClick={() => { setSettingsOpen(true); setExplore(false); setOverlay(null); clear(); }}><Icon n="sliders" />Settings</button>
+          <button className={!explore && !settingsOpen && !messagesOpen ? "on" : ""} onClick={() => { setExplore(false); setSettingsOpen(false); setMessagesOpen(false); setOverlay(null); clear(); }}><Icon n="notes" />My courses</button>
+          <button className={messagesOpen ? "on" : ""} onClick={() => { setMessagesOpen(true); setExplore(false); setSettingsOpen(false); setOverlay(null); clear(); }}><Icon n="chat" />Messages</button>
+          <button className={explore ? "on" : ""} onClick={() => { setExplore(true); setSettingsOpen(false); setMessagesOpen(false); setOverlay(null); clear(); }}><Icon n="search" />Explore</button>
+          <button className={settingsOpen ? "on" : ""} onClick={() => { setSettingsOpen(true); setExplore(false); setMessagesOpen(false); setOverlay(null); clear(); }}><Icon n="sliders" />Settings</button>
         </nav>
         <div className="grow" />
         <div className="user"><div className="avatar">{initials(info?.fullname ?? "?")}</div><span className="grow">{info?.fullname}</span>
@@ -1166,8 +1459,12 @@ export default function App() {
         {note && <div className="offline" role="alert"><Icon n="lock" s={16} /><span className="grow">{note}</span><button className="icon" title="Dismiss" onClick={() => setNote("")}><Icon n="x" s={16} /></button></div>}
         {offline && <div className="offline" role="status"><Icon n="wifi" s={16} /><span>You're offline. Showing courses and files already saved on this device.</span></div>}
         {overlay ? (
-          overlay.kind === "forum"
+          overlay.kind === "conv"
+            ? <ConversationView key={overlay.conv!.id} c={overlay.conv!} me={info?.userid ?? 0} site={session.site} token={session.token} onLink={handleLink} onBack={back} />
+            : overlay.kind === "forum"
             ? <ForumPage title={overlay.title} id={overlay.id!} site={session.site} token={session.token} onLink={handleLink} onClose={back} />
+            : overlay.kind === "chat"
+            ? <ChatPage key={overlay.id} title={overlay.title} id={overlay.id!} cmid={overlay.cmid!} courseId={overlay.courseId!} me={info?.userid ?? 0} site={session.site} token={session.token} onLink={handleLink} onClose={back} />
             : overlay.kind === "assign"
             ? <AssignRow key={overlay.assign!.id} page a={overlay.assign!} site={session.site} token={session.token} onLink={handleLink} getFile={(f) => openAttachment(f, overlay.course!, overlay.group!)} onSubmitted={() => setDueTick((n) => n + 1)} onClose={back} />
             : <HtmlPage title={overlay.title} url={overlay.url!} site={session.site} token={session.token} onLink={handleLink} onClose={back} />
@@ -1176,8 +1473,12 @@ export default function App() {
           <div className="banner" style={{ background: tone(open_.id) }}>{open_.shortname}</div>
           <CourseView key={open_.id} dlMode={dlMode} c={open_} site={session.site} token={session.token} dir={dir} notify={notify} onLink={handleLink}
             onHtml={(title, url) => setOverlay({ kind: "html", title, url })} onForum={(title, id) => setOverlay({ kind: "forum", title, id })} setDl={setDl} onSubmitted={() => setDueTick((n) => n + 1)}
+            onChat={(title, id, cmid, courseId) => setOverlay({ kind: "chat", title, id, cmid, courseId })}
             assignPages={assignPages} onAssign={(a, course, group) => setOverlay({ kind: "assign", title: a.name, assign: a, course, group })} middleDownload={middleDownload} />
-        </>) : explore ? (
+        </>) : messagesOpen ? (
+          <MessagesPage me={info?.userid ?? 0} site={session.site}
+            onOpen={(c) => setOverlay({ kind: "conv", title: api.convName(c, info?.userid ?? 0), conv: c })} />
+        ) : explore ? (
           <Explore site={session.site} token={session.token} enrolled={enrolledIds} notify={notify} onLink={handleLink}
             onJoined={(c) => { setExplore(false); setStack([c]); setEnrolledIds((s) => new Set(s).add(c.id)); load(filter); }} />
         ) : settingsOpen ? (

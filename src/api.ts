@@ -212,3 +212,90 @@ export const forumDiscussions = async (forumid: number) => {
     replies: d.numreplies,
   }));
 };
+
+// Chat rooms: the live room needs a webservice session id (chatsid); past sessions are read-only.
+export type ChatMessage = { id: number; userid: number; system: boolean; message: string; timestamp: number };
+export type ChatSession = { start: number; end: number; complete: boolean; users: { userid: number; messagecount: number }[] };
+const chatMsg = (m: any): ChatMessage => ({
+  id: Number(m.id), userid: Number(m.userid) || 0, system: !!(m.system ?? m.issystem),
+  message: String(m.message ?? ""), timestamp: Number(m.timestamp) || 0,
+});
+// Live messages arrive in order and can repeat the boundary one: keep the first copy of each id.
+export const mergeChat = (a: ChatMessage[], b: ChatMessage[]) => {
+  const seen = new Set(a.map((m) => m.id));
+  return [...a, ...b.filter((m) => !seen.has(m.id))].sort((x, y) => x.timestamp - y.timestamp || x.id - y.id);
+};
+if (import.meta.env.DEV) {
+  const m = (id: number, t: number) => ({ id, userid: 1, system: false, message: "", timestamp: t });
+  console.assert(mergeChat([m(1, 5)], [m(1, 5), m(2, 6)]).map((x) => x.id).join() === "1,2", "chat messages are deduplicated");
+}
+export const chatLogin = async (chatid: number) =>
+  (await ws<{ chatsid: string }>("mod_chat_login_user", { chatid: String(chatid) })).chatsid;
+export const chatLatest = async (chatsid: string, last: number) => {
+  const r = await ws<{ messages?: any[]; chatnewlasttime?: number }>("mod_chat_get_chat_latest_messages", { chatsid, chatlasttime: String(last) });
+  return { messages: (r.messages ?? []).map(chatMsg), last: Number(r.chatnewlasttime) || 0 };
+};
+export const chatSend = async (chatsid: string, text: string) =>
+  (await ws<{ messageid: number }>("mod_chat_send_chat_message", { chatsid, messagetext: text })).messageid;
+export const chatView = (chatid: number) => ws("mod_chat_view_chat", { chatid: String(chatid) }).catch(() => {});
+export const chatSessions = async (chatid: number) => {
+  const r = await ws<{ sessions?: any[] }>("mod_chat_get_sessions", { chatid: String(chatid), groupid: "0", showall: "1" });
+  return (r.sessions ?? []).map((s): ChatSession => ({
+    start: Number(s.sessionstart) || 0, end: Number(s.sessionend) || 0,
+    complete: !!s.iscomplete, users: s.sessionusers ?? [],
+  }));
+};
+export const chatSessionMessages = async (chatid: number, start: number, end: number) =>
+  ((await ws<{ messages?: any[] }>("mod_chat_get_session_messages", {
+    chatid: String(chatid), sessionstart: String(start), sessionend: String(end), groupid: "0",
+  })).messages ?? []).map(chatMsg);
+// Message rows carry only the author id; one batched profile call fills in the names.
+export const chatNames = async (courseid: number, ids: number[]) => {
+  const p: Record<string, string> = {};
+  ids.forEach((id, i) => { p[`userlist[${i}][userid]`] = String(id); p[`userlist[${i}][courseid]`] = String(courseid); });
+  const r = await ws<{ id: number; fullname: string }[]>("core_user_get_course_user_profiles", p);
+  return new Map(r.map((u) => [Number(u.id), u.fullname]));
+};
+
+// Moodle Messages: the conversations behind the site's speech-bubble icon (not the retired Chat activity).
+export type MsgUser = { id: number; fullname: string };
+export type Msg = { id: number; from: number; text: string; time: number };
+export type Conversation = { id: number; name: string; type: number; unread: number; members: MsgUser[]; last?: Msg };
+const msgUser = (m: any): MsgUser => ({ id: Number(m.id), fullname: String(m.fullname ?? "") });
+const msg = (m: any): Msg => ({ id: Number(m.id), from: Number(m.useridfrom) || 0, text: String(m.text ?? ""), time: Number(m.timecreated) || 0 });
+// Polling repeats the boundary second (timefrom is inclusive), so keep one copy of each message id.
+export const mergeMsgs = (a: Msg[], b: Msg[]) => {
+  const all = new Map([...a, ...b].map((m) => [m.id, m]));
+  return [...all.values()].sort((x, y) => x.time - y.time || x.id - y.id);
+};
+// A group has a name; a 1:1 is named after the other person; the self chat is "You".
+export const convName = (c: Conversation, me: number) =>
+  c.name || (c.type === 3 ? "You" : c.members.filter((m) => m.id !== me).map((m) => m.fullname).join(", ") || "Conversation");
+if (import.meta.env.DEV) {
+  const u = (id: number, fullname: string) => ({ id, fullname });
+  const base = { id: 1, type: 1, unread: 0, members: [u(1, "Me"), u(2, "Ada")] };
+  console.assert(convName({ ...base, name: "" }, 1) === "Ada", "1:1 chats use the other person's name");
+  console.assert(convName({ ...base, type: 3, name: "" }, 1) === "You", "self chat is named You");
+  console.assert(convName({ ...base, type: 2, name: "Project" }, 1) === "Project", "group chats keep their name");
+  const m = (id: number, time: number) => ({ id, from: 1, text: "", time });
+  console.assert(mergeMsgs([m(1, 5)], [m(1, 5), m(2, 6)]).map((x) => x.id).join() === "1,2", "messages are merged by id");
+}
+export const conversations = async (userid: number) => {
+  const r = await ws<{ conversations?: any[] }>("core_message_get_conversations", { userid: String(userid), limitnum: "50", mergeself: "1" });
+  return (r.conversations ?? []).map((c): Conversation => ({
+    id: Number(c.id), name: String(c.name ?? ""), type: Number(c.type) || 1,
+    unread: Number(c.unreadcount) || 0, members: (c.members ?? []).map(msgUser),
+    last: (c.messages ?? []).map(msg).sort((x: Msg, y: Msg) => x.time - y.time).pop(),
+  }));
+};
+export const conversationMessages = async (me: number, convid: number, timefrom = 0) => {
+  const r = await ws<{ messages?: any[]; members?: any[] }>("core_message_get_conversation_messages", {
+    currentuserid: String(me), convid: String(convid), limitnum: "50", newest: "1",
+    ...(timefrom ? { timefrom: String(timefrom) } : {}),
+  });
+  return { messages: (r.messages ?? []).map(msg).sort((x, y) => x.time - y.time || x.id - y.id), members: (r.members ?? []).map(msgUser) };
+};
+export const sendMessage = async (convid: number, text: string) =>
+  (await ws<any[]>("core_message_send_messages_to_conversation", { conversationid: String(convid), "messages[0][text]": text })).map(msg);
+export const markRead = (me: number, convid: number) =>
+  ws("core_message_mark_all_conversation_messages_as_read", { userid: String(me), conversationid: String(convid) }).catch(() => {});

@@ -20,7 +20,7 @@ nav button,.folder{display:flex;align-items:center;gap:10px;padding:9px 12px;bor
 .user{display:flex;align-items:center;gap:10px;padding:12px 8px 0;border-top:1px solid var(--line);margin-top:6px;font-size:14px}.user span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .avatar{width:32px;height:32px;border-radius:50%;background:var(--tint);color:var(--accfg);display:grid;place-items:center;font-size:12px;font-weight:700}
 .icon{padding:8px;border-radius:var(--r);color:var(--mut);display:grid;place-items:center}.icon:hover{background:var(--tint);color:var(--fg)}
-main{overflow:auto;padding:clamp(16px,3vw,28px) calc(clamp(16px,4vw,36px) + env(safe-area-inset-right)) clamp(16px,3vw,28px) clamp(16px,4vw,36px)}.bar{display:flex;align-items:center;gap:12px;margin-bottom:22px}.bar h1{font:600 28px var(--serif);margin:0;flex:1}.search{max-width:260px}
+main{overflow:auto;padding:clamp(16px,3vw,28px) calc(clamp(16px,4vw,36px) + env(safe-area-inset-right)) clamp(16px,3vw,28px) calc(clamp(16px,4vw,36px) + env(safe-area-inset-left))}.bar{display:flex;align-items:center;gap:12px;margin-bottom:22px}.bar h1{font:600 28px var(--serif);margin:0;flex:1}.search{max-width:260px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:18px}
 .course{background:var(--card);border:1px solid var(--line);border-radius:var(--r);position:relative;cursor:pointer}.course:hover{border-color:var(--mut)}
 .cover{position:relative;overflow:hidden;border-radius:5px 5px 0 0;height:76px;display:flex;align-items:flex-end;padding:10px 14px;color:#fff;font:600 24px var(--serif)}.body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:8px;font-size:14px;line-height:1.35}.body b{font:600 15px/1.3 var(--serif)}
@@ -190,3 +190,36 @@ button{touch-action:manipulation}
 .drop{display:flex;flex-direction:column;align-items:center;gap:8px;margin:10px 0;padding:14px;border:1.5px dashed var(--line);border-radius:var(--r);font-size:13px;color:var(--mut);transition:background .12s,border-color .12s,color .12s}
 .drop.on{border-color:var(--acc);background:var(--tint);color:var(--fg)}
 .drop .joinrow{justify-content:center}
+.chaton{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mut);white-space:nowrap}
+.chaton::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--mut)}
+.chaton.on::before{background:var(--acc)}
+/* Chat takes the whole page: the messages scroll inside, the composer sits at the bottom with the page padding. */
+.chatpage{display:flex;flex-direction:column;height:100%;min-height:0}
+.chatfill{display:flex;flex-direction:column;flex:1;min-height:0}
+.chatpage .bar{margin-bottom:14px}
+.msgs{display:flex;flex-direction:column;gap:12px;padding:18px 20px;max-height:min(60vh,560px);overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:var(--r)}
+.chatpage .msgs{flex:1;min-height:0;max-height:none}
+.msgs>p{margin:0}
+.chatmsg{display:flex;flex-direction:column;gap:3px;max-width:min(78%,560px);align-self:flex-start;font-size:14px}
+.chatmsg.mine{align-self:flex-end;align-items:flex-end}
+.chatmsg b{font-size:12px;color:var(--accfg);font-weight:600}
+.chatmsg small{font-size:11px}
+.chatmsg .bubble{background:var(--tint);border-radius:12px;padding:10px 14px;line-height:1.45;overflow-wrap:anywhere}
+.chatmsg.mine .bubble{background:var(--acc);color:var(--accon)}
+.chatmsg.mine .html a{color:inherit}
+/* formatted message HTML must not add its own outer margins inside a bubble */
+.chatmsg .bubble .html>:first-child{margin-top:0}
+.chatmsg .bubble .html>:last-child{margin-bottom:0}
+.chatmsg .bubble .html p{margin:4px 0}
+.chatmsg .bubble.raw{white-space:pre-wrap}
+.chatmsg.sys{align-self:center;max-width:100%;color:var(--mut);font-size:12px;text-align:center}
+.composer{display:flex;gap:8px;align-items:flex-end;margin-top:12px}
+.composer textarea{flex:1;min-height:44px;max-height:140px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;resize:none;font:inherit;color:inherit}
+.composer textarea:focus{outline:0;border-color:var(--accfg);box-shadow:0 0 0 1px var(--accfg)}
+.composer .primary{white-space:nowrap}
+.emojiwrap{position:relative;display:flex;align-items:center;align-self:center}
+.emojiwrap>.icon{width:44px;height:44px;padding:0}
+.emojis{position:absolute;right:0;bottom:calc(100% + 8px);z-index:5;display:grid;grid-template-columns:repeat(8,1fr);gap:2px;padding:8px;width:min(300px,calc(100vw - 32px));background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:0 8px 28px #0003}
+.emojis button{font-size:19px;line-height:1;padding:5px;border-radius:4px;text-align:center}
+.emojis button:hover{background:var(--tint)}
+.unread{background:var(--acc);color:var(--accon);border-radius:999px;min-width:20px;padding:2px 6px;font-size:11px;font-weight:700;text-align:center}

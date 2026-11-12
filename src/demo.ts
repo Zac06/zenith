@@ -76,6 +76,17 @@ const ws = (fn: string, p: Record<string, string>): unknown => {
     }
     case "mod_assign_save_submission": case "mod_assign_submit_for_grading": return [];
     case "mod_forum_get_forum_discussions": return { discussions: [{ discussion: 1, subject: "Welcome to the course", message: "<p>Lectures start on Monday. Bring the textbook.</p>", userfullname: "Course team", created: now - 2 * DAY, numreplies: 0 }] };
+    case "core_message_get_conversations": return { conversations: [{
+      id: 1, name: "", type: 1, unreadcount: 1,
+      members: [{ id: 1, fullname: "Alex Doe" }, { id: 2, fullname: "Study buddy" }],
+      messages: [{ id: 1, useridfrom: 2, text: "<p>See you at the library?</p>", timecreated: now - 3600 }],
+    }] };
+    case "core_message_get_conversation_messages": return { id: Number(p.convid), members: [{ id: 2, fullname: "Study buddy" }], messages: [
+      { id: 1, useridfrom: 2, text: "<p>See you at the library?</p>", timecreated: now - 3600 },
+      { id: 2, useridfrom: 1, text: "<p>On my way.</p>", timecreated: now - 3500 },
+    ] };
+    case "core_message_send_messages_to_conversation": return [{ id: 3, useridfrom: 1, text: `<p>${String(p["messages[0][text]"] ?? "")}</p>`, timecreated: now }];
+    case "core_message_mark_all_conversation_messages_as_read": return {};
   }
   throw "Not available in screenshot mode.";
 };
