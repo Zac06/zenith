@@ -187,3 +187,6 @@ button{touch-action:manipulation}
 .swipehint.on .bub{opacity:var(--o,.5)}
 .swipehint[data-dir="-1"] .bub{left:14px}
 .swipehint[data-dir="1"] .bub{right:14px}.swipehint[data-dir="1"] .bub svg{transform:scaleX(-1)}
+.drop{display:flex;flex-direction:column;align-items:center;gap:8px;margin:10px 0;padding:14px;border:1.5px dashed var(--line);border-radius:var(--r);font-size:13px;color:var(--mut);transition:background .12s,border-color .12s,color .12s}
+.drop.on{border-color:var(--acc);background:var(--tint);color:var(--fg)}
+.drop .joinrow{justify-content:center}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import DOMPurify from "dompurify";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCourseStack } from "./courseStack";
 import * as api from "./api";
@@ -252,6 +253,32 @@ function AssignRow({ a, site, token, onLink, getFile, onSubmitted, onOpen, page,
       setPicked([...picked, ...paths]);
     } catch (e) { setMsg(String(e)); }
   };
+  // Files dropped over the attachment area are attached exactly like ones picked in the dialog.
+  // Tauri handles the native drag itself (the WebView never sees HTML5 drops), so listen to its events.
+  const [dragging, setDragging] = useState(false); const zoneRef = useRef<HTMLDivElement>(null);
+  const showDrop = expanded && !locked && canEdit && !!st && pluginOn(a, "file");
+  // Tauri's docs say drag positions are physical pixels, but only the Windows backend reports device pixels;
+  // macOS and GTK already report CSS-scale points.
+  const cssPoint = (x: number, y: number) => (/Windows/i.test(navigator.userAgent) ? [x / devicePixelRatio, y / devicePixelRatio] : [x, y]);
+  useEffect(() => {
+    if (!showDrop) return;
+    const hit = (x: number, y: number) => {
+      const r = zoneRef.current?.getBoundingClientRect();
+      return !!r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    };
+    const un = getCurrentWebview().onDragDropEvent(({ payload }) => {
+      if (payload.type === "leave") { setDragging(false); return; }
+      const [x, y] = cssPoint(payload.position.x, payload.position.y);
+      const inside = hit(x, y);
+      if (payload.type === "drop") {
+        setDragging(false);
+        if (inside) setPicked((cur) => [...cur, ...payload.paths.filter((x) => !cur.includes(x))]);
+        return;
+      }
+      setDragging(inside);
+    });
+    return () => { un.then((f) => f()); };
+  }, [showDrop, a.id]);
   const dirty = picked.length > 0 || (pluginOn(a, "onlinetext") && text !== loadedText);
   const done = st?.submission === "submitted";
   const idle = !dirty && (!drafts || done);   // nothing to save and nothing left to submit
@@ -298,12 +325,13 @@ function AssignRow({ a, site, token, onLink, getFile, onSubmitted, onOpen, page,
       {!locked && canEdit && st && (pluginOn(a, "file") || pluginOn(a, "onlinetext")) && (
         <div className="submit">
           {pluginOn(a, "onlinetext") && <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Write your answer…" rows={5} />}
-          {pluginOn(a, "file") && <div className="joinrow">
+          {pluginOn(a, "file") && <div className={"drop" + (dragging ? " on" : "")} ref={zoneRef}>
+            <span className="dropmsg">{dragging ? "Drop to attach" : "Drag files here"}</span>
             <button className="btn" onClick={choose}>Attach files…</button>
-            {picked.map((p) => <span className="chip file" key={p}>
+            {picked.length > 0 && <div className="joinrow">{picked.map((p) => <span className="chip file" key={p}>
               <button title={p} onClick={() => api.openPicked(p).catch((e) => setMsg(String(e).replace(/^Error: /, "")))}>{p.split(/[\\/]/).pop()}</button>
               <button title="Remove" aria-label={"Remove " + p} onClick={() => setPicked(picked.filter((x) => x !== p))}><Icon n="x" s={12} /></button>
-            </span>)}
+            </span>)}</div>}
           </div>}
           {picked.length > 0 && <small className="muted">The attached files replace any files already submitted. Leave this empty to keep them.</small>}
           {a.requiresubmissionstatement === 1 && <div className="joinrow">
