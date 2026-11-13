@@ -16,6 +16,10 @@ struct ValueArg<'a> {
     value: &'a str,
 }
 #[derive(Deserialize)]
+struct Granted {
+    granted: bool,
+}
+#[derive(Deserialize)]
 struct Secret {
     value: Option<String>,
 }
@@ -28,6 +32,14 @@ impl<R: Runtime> AndroidNative<R> {
     /// Hands a downloaded APK to Android's package installer.
     pub fn install_apk(&self, path: &str) -> Result<(), String> {
         self.0.run_mobile_plugin("installApk", PathArg { path }).map_err(|e| e.to_string())
+    }
+    /// Whether the user has allowed Zenith to install apps (needed for its own updates).
+    pub fn install_permission(&self) -> bool {
+        self.0.run_mobile_plugin::<Granted>("installPermission", ()).map(|g| g.granted).unwrap_or(false)
+    }
+    /// Opens the system switch for that permission; only the user can turn it on.
+    pub fn request_install_permission(&self) -> Result<(), String> {
+        self.0.run_mobile_plugin("requestInstallPermission", ()).map_err(|e| e.to_string())
     }
     /// Encrypts with a key that lives in the Android Keystore (it never leaves the secure hardware) and stores the result.
     pub fn secret_set(&self, value: &str) -> Result<(), String> {

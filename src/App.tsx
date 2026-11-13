@@ -33,6 +33,7 @@ const P: Record<string, string> = {
   eyeoff: "M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94 M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19 M1 1l22 22",
   eye: "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z",
   ext: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6 M15 3h6v6 M10 14L21 3",
+  refresh: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16 M8 16H3v5",
   wifi: "M5 12.55a11 11 0 0 1 14.08 0 M1.42 9a16 16 0 0 1 21.16 0 M8.53 16.11a6 6 0 0 1 6.95 0 M12 20h.01",
 };
 const Icon = ({ n, s = 18 }: { n: string; s?: number }) => (
@@ -382,9 +383,11 @@ function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, onCh
   useEffect(() => { const h = () => setMenu(null); window.addEventListener("click", h); return () => window.removeEventListener("click", h); }, []);
   // Saved under <course>/<activity>/<folder path>, so same-named files in different activities never overwrite each other
   const folderOf = (f: api.FileItem, group: number) => `${course}/${group}${f.filepath && f.filepath !== "/" ? f.filepath : ""}`;
+  const lastKey = "lastDoc:" + c.id; const [last, setLast] = useState(() => localStorage.getItem(lastKey));   // the document opened most recently in this course
   const getFile = async (f: api.FileItem, force = false, group = 0, open = true) => {
     setMenu(null);
     const folder = group ? folderOf(f, group) : course, key = folder + "::" + f.filename;
+    if (open) { localStorage.setItem(lastKey, key); setLast(key); }
     if (dlBusy.current.has(key)) return;   // a second click while it downloads
     // a Moodle-hosted HTML resource is a page, not a bare file: show it in the app with its pictures and links intact.
     // "download only" still saves the raw file.
@@ -442,13 +445,13 @@ function CourseView({ c, site, token, dir, notify, onLink, onHtml, onForum, onCh
     const files = (m.contents ?? []).filter((f) => f.type === "file");
     if (files.length) return files.map((f) => {
       const savedPath = saved.get(folderOf(f, m.id) + "::" + f.filename);
-      const isSaved = savedPath !== undefined;
+      const isSaved = savedPath !== undefined, isLast = last === folderOf(f, m.id) + "::" + f.filename;
       return (
-        <div className="item" role="button" key={m.id + (f.filepath ?? "") + f.filename} onClick={() => getFile(f, false, m.id)}
+        <div className={isLast ? "item last" : "item"} role="button" key={m.id + (f.filepath ?? "") + f.filename} onClick={() => getFile(f, false, m.id)}
           onMouseDown={(e) => { if (middleDownload && e.button === 1) e.preventDefault(); }}   // no autoscroll
           onAuxClick={(e) => { if (middleDownload && e.button === 1) getFile(f, false, m.id, false); }}>
           <span className="ico"><Icon n={modIcon(m.modname)} /></span>
-          <span className="grow">{m.modname === "folder" ? `${m.name} / ${f.filename}` : m.name}<small>{f.filename} · {size(f.filesize)}{isSaved ? " · saved" : ""}</small></span>
+          <span className="grow">{m.modname === "folder" ? `${m.name} / ${f.filename}` : m.name}<small>{f.filename} · {size(f.filesize)}{isSaved ? " · saved" : ""}{isLast ? " · last opened" : ""}</small></span>
           <button className="icon" title="Options" onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setMenu({ f, g: m.id, path: savedPath, x: window.innerWidth - r.right, y: r.bottom + 4 }); }}><Icon n="dots" /></button>
         </div>);
     });
@@ -919,7 +922,7 @@ type Theme = "system" | "light" | "dark";
 const THEMES: [Theme, string, string][] = [["system", "System", "Follow your device"], ["light", "Light", "Always light"], ["dark", "Dark", "Always dark"]];
 
 const ACCENTS: [string, string][] = [["", "Pine"], ["#1d4ed8", "Blue"], ["#6d28d9", "Violet"], ["#be123c", "Rose"], ["#92400e", "Amber"], ["#334155", "Slate"]];   // all pass AA text contrast on the light and (lightened) dark backgrounds
-const SETTINGS_TABS = [["general", "General"], ["appearance", "Appearance"], ["downloads", "Downloads"], ["about", "About"]] as const;
+const SETTINGS_TABS = [["general", "General"], ["appearance", "Appearance"], ["downloads", "Downloads"], ["permissions", "Permissions"], ["about", "About"]] as const;
 
 type Contrast = "system" | "on" | "off";
 const CONTRASTS: [Contrast, string, string][] = [["system", "System", "Follow your device"], ["on", "On", "Always high contrast"], ["off", "Off", "Never"]];
@@ -970,8 +973,27 @@ function About() {
   </div>);
 }
 
+// Android only: may Zenith install apps (its own updates)? null where the platform has no such switch. The user flips it in the
+// system settings, so it is read again whenever the app comes back to the front.
+function useInstallPerm() {
+  const [ok, setOk] = useState<boolean | null>(null);
+  useEffect(() => {
+    const read = () => api.installPermission().then(setOk).catch(() => setOk(null));
+    read();
+    window.addEventListener("focus", read); document.addEventListener("visibilitychange", read);
+    return () => { window.removeEventListener("focus", read); document.removeEventListener("visibilitychange", read); };
+  }, []);
+  return ok;
+}
+const PermRow = ({ title, desc, ok, grant }: { title: string; desc: string; ok: boolean; grant: () => void }) => (
+  <div className="setrow"><div className="grow"><b>{title}</b><small>{desc}</small></div>
+    <span className={ok ? "chip" : "chip warn"}>{ok ? "Granted" : "Not granted"}</span>
+    {!ok && <button className="btn" onClick={grant}>Grant</button>}</div>);
+const INSTALL_PERM: [string, string] = ["Install updates", "Lets Zenith install a new version it has downloaded. Without it, updating stops with an error."];
+
 function Settings({ user, site, signOut, dir, pick, reset, mode, setMode, notify, theme, setTheme, contrast, setContrast, updateMode, setUpdateMode, checkNow, checking, canUpdate, accent, setAccent, assignPages, setAssignPages, internalLinks, setInternalLinks, middleDownload, setMiddleDownload }: { user: string; site: string; signOut: () => void; dir: string | null; pick: () => Promise<string | null>; reset: () => void; mode: api.DlMode; setMode: (m: api.DlMode) => void; notify: (m: string) => void; theme: Theme; setTheme: (t: Theme) => void; contrast: Contrast; setContrast: (c: Contrast) => void; updateMode: api.UpdateMode; setUpdateMode: (m: api.UpdateMode) => void; checkNow: () => void; checking: boolean; canUpdate: boolean; accent: string; setAccent: (a: string) => void; assignPages: boolean; setAssignPages: (v: boolean) => void; internalLinks: boolean; setInternalLinks: (v: boolean) => void; middleDownload: boolean; setMiddleDownload: (v: boolean) => void }) {
   const [tab, setTab] = useState<(typeof SETTINGS_TABS)[number][0]>("general");
+  const perm = useInstallPerm();
   const [files, setFiles] = useState<api.DlEntry[] | null>(null); const [confirm, setConfirm] = useState<string | null>(null);
   const [sort, setSort] = useState<Sort>((localStorage.getItem("dlSort") as Sort) || "name");
   const changeSort = (v: Sort) => { localStorage.setItem("dlSort", v); setSort(v); };
@@ -991,7 +1013,7 @@ function Settings({ user, site, signOut, dir, pick, reset, mode, setMode, notify
   return (
     <div className="stack">
       <div className="bar"><h1>Settings</h1></div>
-      <div className="tabs">{SETTINGS_TABS.map(([k, l]) => <button key={k} className={tab === k ? "tab on" : "tab"} onClick={() => setTab(k)}>{l}</button>)}</div>
+      <div className="tabs">{SETTINGS_TABS.filter(([k]) => k !== "permissions" || perm !== null).map(([k, l]) => <button key={k} className={tab === k ? "tab on" : "tab"} onClick={() => setTab(k)}>{l}</button>)}</div>
       {tab === "general" && (<>
       <section className="sec only-phone">
         <div className="sechead static">Account</div>
@@ -1056,6 +1078,12 @@ function Settings({ user, site, signOut, dir, pick, reset, mode, setMode, notify
           <button className="btn danger" onClick={() => ask("all", () => del())}>{confirm === "all" ? "Click to confirm" : "Delete all downloads"}</button></div>}
       </section>
       </>)}
+      {tab === "permissions" && (
+      <section className="sec">
+        <div className="sechead static">Permissions</div>
+        <div className="setrow"><div className="grow muted">Android keeps these switches in its own settings, so Zenith can only open them for you. The status here updates when you come back.</div></div>
+        <PermRow title={INSTALL_PERM[0]} desc={INSTALL_PERM[1]} ok={perm === true} grant={() => api.grantInstallPermission().catch((e) => notify(String(e)))} />
+      </section>)}
       {tab === "about" && <About />}
     </div>);
 }
@@ -1064,7 +1092,8 @@ function Settings({ user, site, signOut, dir, pick, reset, mode, setMode, notify
 const seenSetup = () => localStorage.getItem("onboarded") === "1" || ["theme", "contrast", "dlMode", "dlDir"].some((k) => localStorage.getItem(k) !== null);
 
 function Setup({ theme, setTheme, contrast, setContrast, onDone }: { theme: Theme; setTheme: (t: Theme) => void; contrast: Contrast; setContrast: (c: Contrast) => void; onDone: () => void }) {
-  const [step, setStep] = useState(0); const last = 2;
+  const [step, setStep] = useState(0);
+  const perm = useInstallPerm(); const last = perm === null ? 2 : 3;   // the permission step exists on Android only
   return (
     <div className="setup">
       <button className="ghost skip" onClick={onDone}>Skip</button>
@@ -1089,9 +1118,15 @@ function Setup({ theme, setTheme, contrast, setContrast, onDone }: { theme: Them
           <div className="choices">{CONTRASTS.map(([k, t, d]) => <button key={k} aria-pressed={contrast === k} className={contrast === k ? "choice on" : "choice"} onClick={() => setContrast(k)}><b>{t}</b><small>{d}</small></button>)}</div></div>
           <p className="muted small2">You can change all of this later in Settings.</p>
         </>)}
+        {step === 3 && (<>
+          <h1>Allow updates</h1>
+          <p className="muted">Android asks before an app may install another one. Allow it now, so a Zenith update never stops with an error later.</p>
+          <section className="sec"><PermRow title={INSTALL_PERM[0]} desc={INSTALL_PERM[1]} ok={perm === true} grant={() => api.grantInstallPermission().catch(() => {})} /></section>
+          <p className="muted small2">You can also do this later in Settings → Permissions.</p>
+        </>)}
         <div className="setupnav">
           {step > 0 ? <button className="btn" onClick={() => setStep(step - 1)}>Back</button> : <span style={{ width: 70 }} />}
-          <div className="pager">{[0, 1, 2].map((i) => <i key={i} className={i === step ? "on" : ""} />)}</div>
+          <div className="pager">{Array.from({ length: last + 1 }, (_, i) => <i key={i} className={i === step ? "on" : ""} />)}</div>
           <button className="primary" style={{ padding: "12px 22px" }} onClick={() => (step < last ? setStep(step + 1) : onDone())}>{step === 0 ? "Get started" : step < last ? "Next" : "Continue to login"}</button>
         </div>
       </div>
@@ -1435,11 +1470,20 @@ export default function App() {
   const pick = async () => { const p = await open({ directory: true, title: "Choose download folder" }); if (typeof p === "string") { localStorage.setItem("dlDir", p); setDir(p); return p; } return null; };
   const resetDir = () => { localStorage.removeItem("dlDir"); setDir(null); };
 
+  // Refresh: every page under <main> starts over (its key changes), the course list and the due list are fetched again
+  const [rk, setRk] = useState(0); const [spin, setSpin] = useState(false);
+  const doRefresh = () => { setRk((n) => n + 1); setTick((n) => n + 1); setDueTick((n) => n + 1); setSpin(true); setTimeout(() => setSpin(false), 700); };
+  const refreshRef = useRef(doRefresh); refreshRef.current = doRefresh;
+  useEffect(() => {
+    const f = (e: KeyboardEvent) => { if (e.key === "F5" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r")) { e.preventDefault(); refreshRef.current(); } };
+    window.addEventListener("keydown", f); return () => window.removeEventListener("keydown", f);
+  }, []);
   const signOut = () => api.logout().then(() => { viewKey.current = ""; restoringView.current = false; hidx.current = 0; hmax.current = 0; clear(); cacheClear(); setOverlay(null); setInfo(null); setCourses([]); refresh(); });
   if (session === undefined) return null;
   if (!session) return setup
     ? <Setup theme={theme} setTheme={setTheme} contrast={contrast} setContrast={setContrast} onDone={finishSetup} />
     : <Login onDone={refresh} />;
+  const refreshBtn = <button className={spin ? "icon spin" : "icon"} title="Refresh (F5)" aria-label="Refresh" onClick={doRefresh}><Icon n="refresh" /></button>;
   const shown = courses.filter((c) => c.fullname.toLowerCase().includes(q.toLowerCase()));
   return (
     <div className="app">
@@ -1455,7 +1499,7 @@ export default function App() {
         <div className="user"><div className="avatar">{initials(info?.fullname ?? "?")}</div><span className="grow">{info?.fullname}</span>
           <button className="icon" title="Sign out" onClick={signOut}><Icon n="out" /></button></div>
       </aside>
-      <main>
+      <main key={rk}>
         {note && <div className="offline" role="alert"><Icon n="lock" s={16} /><span className="grow">{note}</span><button className="icon" title="Dismiss" onClick={() => setNote("")}><Icon n="x" s={16} /></button></div>}
         {offline && <div className="offline" role="status"><Icon n="wifi" s={16} /><span>You're offline. Showing courses and files already saved on this device.</span></div>}
         {overlay ? (
@@ -1469,7 +1513,7 @@ export default function App() {
             ? <AssignRow key={overlay.assign!.id} page a={overlay.assign!} site={session.site} token={session.token} onLink={handleLink} getFile={(f) => openAttachment(f, overlay.course!, overlay.group!)} onSubmitted={() => setDueTick((n) => n + 1)} onClose={back} />
             : <HtmlPage title={overlay.title} url={overlay.url!} site={session.site} token={session.token} onLink={handleLink} onClose={back} />
         ) : open_ ? (<>
-          <div className="bar"><button className="icon" onClick={back}><Icon n="back" /></button><h1>{open_.fullname}</h1></div>
+          <div className="bar"><button className="icon" onClick={back}><Icon n="back" /></button><h1>{open_.fullname}</h1>{refreshBtn}</div>
           <div className="banner" style={{ background: tone(open_.id) }}>{open_.shortname}</div>
           <CourseView key={open_.id} dlMode={dlMode} c={open_} site={session.site} token={session.token} dir={dir} notify={notify} onLink={handleLink}
             onHtml={(title, url) => setOverlay({ kind: "html", title, url })} onForum={(title, id) => setOverlay({ kind: "forum", title, id })} setDl={setDl} onSubmitted={() => setDueTick((n) => n + 1)}
@@ -1487,7 +1531,7 @@ export default function App() {
             assignPages={assignPages} setAssignPages={changeAssignPages} internalLinks={internalLinks} setInternalLinks={changeInternalLinks}
             middleDownload={middleDownload} setMiddleDownload={changeMiddleDownload} />
         ) : (<>
-          <div className="bar"><h1>My courses</h1><input className="search" placeholder="Search courses…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
+          <div className="bar"><h1>My courses</h1>{refreshBtn}<input className="search" placeholder="Search courses…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
           {!!due.length && <section className="duecard" aria-label="Upcoming assignments">
             <div className="duehead"><b>Due soon</b><small>{due.length} upcoming</small></div>
             {due.map((a) => <button className={"due " + (a.submitted === true ? "submitted" : a.submitted === false ? "pending" : "unknown")} key={a.id} onClick={() => assignPages ? setOverlay({ kind: "assign", title: a.name, assign: a, course: a.courseShort, group: a.cmid }) : openCourseById(a.courseId)}>

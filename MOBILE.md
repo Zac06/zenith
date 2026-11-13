@@ -38,6 +38,7 @@ npm run tauri android build
 | Sidebar, `100vh`, notches | Bottom bar under 600 px, `100dvh`, `viewport-fit=cover` and safe-area insets |
 | No hover or right-click on touch | Course menu button always visible, 44 px touch targets |
 | Android back button closed the app | Each open course is a history entry, so back goes up one level (`src/courseStack.ts`) |
+| Installing an update needs the "install unknown apps" switch, which only the user can turn on | The first-launch setup asks for it (it opens the system switch), and Settings → Permissions shows its status with a Grant button (`installPermission` in `plugins/android-native`) |
 | Sign out lived in the sidebar | On phones it is in Settings → Account |
 
 ## Signing the Android APK

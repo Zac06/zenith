@@ -74,6 +74,9 @@ let onNote: (m: string) => void = () => {};
 export const setNoteHandler = (f: (m: string) => void) => { onNote = f; };
 // opens in the system browser (auto-logged-in when possible); reports why auto-login was skipped
 export const openWeb = (url: string) => invoke<string | null>("open_authed", { url }).then((m) => onNote(m ?? ""));
+// Android only: may Zenith install apps (its own updates)? null where the platform has no such switch.
+export const installPermission = () => invoke<boolean | null>("install_permission");
+export const grantInstallPermission = () => invoke<void>("request_install_permission");
 export type UpdateMode = "auto" | "ask" | "manual";
 export type UpdateInfo = { version: string; url: string; notes: string; apkUrl?: string };
 export type UpdateProgress = { done: number; total: number | null };

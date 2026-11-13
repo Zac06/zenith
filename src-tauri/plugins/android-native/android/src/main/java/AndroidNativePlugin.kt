@@ -96,6 +96,29 @@ class AndroidNativePlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
+    /** Whether Android lets Zenith install apps (its own updates). Before Android 8 there is no such switch, so it counts as allowed. */
+    @Command
+    fun installPermission(invoke: Invoke) {
+        val result = JSObject()
+        result.put("granted", Build.VERSION.SDK_INT < Build.VERSION_CODES.O || activity.packageManager.canRequestPackageInstalls())
+        invoke.resolve(result)
+    }
+
+    /** Opens Zenith's "install unknown apps" switch in the system settings: only the user can turn it on. */
+    @Command
+    fun requestInstallPermission(invoke: Invoke) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                activity.startActivity(
+                    Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}"))
+                )
+            }
+            invoke.resolve()
+        } catch (e: Exception) {
+            invoke.reject(e.message ?: "Could not open the settings")
+        }
+    }
+
     /** The key is made once and stays inside the Android Keystore: this code only ever asks it to encrypt and decrypt. */
     private fun key(): SecretKey {
         val keystore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

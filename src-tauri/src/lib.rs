@@ -1275,6 +1275,34 @@ fn install_update(app: AppHandle, path: String) -> Result<(), String> {
     }
 }
 
+/// Android only: whether the user has allowed Zenith to install apps, which its updates need. None where there is no such switch.
+#[tauri::command]
+fn install_permission(app: AppHandle) -> Option<bool> {
+    #[cfg(target_os = "android")]
+    {
+        Some(app.android_native().install_permission())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        None
+    }
+}
+
+/// Android only: opens the system switch for that permission.
+#[tauri::command]
+fn request_install_permission(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        app.android_native().request_install_permission()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Err("Only Android has this permission".into())
+    }
+}
+
 /// Restores the session from the OS keychain. Returns { site, token } or null.
 #[tauri::command]
 fn get_session(app: AppHandle, state: State<AppState>) -> Option<Session> {
@@ -1362,6 +1390,8 @@ pub fn run() {
             can_self_update,
             download_update,
             install_update,
+            install_permission,
+            request_install_permission,
             list_downloads,
             delete_downloads,
             open_local,
