@@ -986,9 +986,9 @@ function useInstallPerm() {
   return ok;
 }
 const PermRow = ({ title, desc, ok, grant }: { title: string; desc: string; ok: boolean; grant: () => void }) => (
-  <div className="setrow"><div className="grow"><b>{title}</b><small>{desc}</small></div>
+  <div className="setrow perm"><div className="grow"><b>{title}</b><small>{desc}</small></div>
     <span className={ok ? "chip" : "chip warn"}>{ok ? "Granted" : "Not granted"}</span>
-    {!ok && <button className="btn" onClick={grant}>Grant</button>}</div>);
+    {!ok && <button className="primary sm" onClick={grant}>Grant</button>}</div>);
 const INSTALL_PERM: [string, string] = ["Install updates", "Lets Zenith install a new version it has downloaded. Without it, updating stops with an error."];
 
 function Settings({ user, site, signOut, dir, pick, reset, mode, setMode, notify, theme, setTheme, contrast, setContrast, updateMode, setUpdateMode, checkNow, checking, canUpdate, accent, setAccent, assignPages, setAssignPages, internalLinks, setInternalLinks, middleDownload, setMiddleDownload }: { user: string; site: string; signOut: () => void; dir: string | null; pick: () => Promise<string | null>; reset: () => void; mode: api.DlMode; setMode: (m: api.DlMode) => void; notify: (m: string) => void; theme: Theme; setTheme: (t: Theme) => void; contrast: Contrast; setContrast: (c: Contrast) => void; updateMode: api.UpdateMode; setUpdateMode: (m: api.UpdateMode) => void; checkNow: () => void; checking: boolean; canUpdate: boolean; accent: string; setAccent: (a: string) => void; assignPages: boolean; setAssignPages: (v: boolean) => void; internalLinks: boolean; setInternalLinks: (v: boolean) => void; middleDownload: boolean; setMiddleDownload: (v: boolean) => void }) {
@@ -1091,7 +1091,7 @@ function Settings({ user, site, signOut, dir, pick, reset, mode, setMode, notify
 // first-launch setup: look + accessibility, shown once. Signing in to the university happens afterwards, on the normal login screen.
 const seenSetup = () => localStorage.getItem("onboarded") === "1" || ["theme", "contrast", "dlMode", "dlDir"].some((k) => localStorage.getItem(k) !== null);
 
-function Setup({ theme, setTheme, contrast, setContrast, onDone }: { theme: Theme; setTheme: (t: Theme) => void; contrast: Contrast; setContrast: (c: Contrast) => void; onDone: () => void }) {
+function Setup({ theme, setTheme, contrast, setContrast, accent, setAccent, onDone }: { theme: Theme; setTheme: (t: Theme) => void; contrast: Contrast; setContrast: (c: Contrast) => void; accent: string; setAccent: (a: string) => void; onDone: () => void }) {
   const [step, setStep] = useState(0);
   const perm = useInstallPerm(); const last = perm === null ? 2 : 3;   // the permission step exists on Android only
   return (
@@ -1104,12 +1104,14 @@ function Setup({ theme, setTheme, contrast, setContrast, onDone }: { theme: Them
         </>)}
         {step === 1 && (<>
           <h1>Choose your look</h1>
-          <p className="muted">Pick how Zenith should appear. The whole window updates as you choose.</p>
+          <p className="muted">Pick how Zenith should appear, and the colour it uses for highlights. The whole window updates as you choose.</p>
           <div className="looks">{THEMES.map(([k, t, d]) => (
             <button key={k} aria-pressed={theme === k} className={theme === k ? "look on" : "look"} onClick={() => setTheme(k)}>
               <div className={"thumb " + k}><i className="tb" /><i className="tc" /><i className="tc" /></div>
               <b>{t}</b><small>{d}</small>
             </button>))}</div>
+          <div className="accrow col"><b>Accent colour</b>
+            <div className="swatches">{ACCENTS.map(([c, n]) => <button key={n} aria-pressed={accent === c} aria-label={n} title={n} className={accent === c ? "swatch on" : "swatch"} style={{ background: c || "#1f5c4a" }} onClick={() => setAccent(c)} />)}</div></div>
         </>)}
         {step === 2 && (<>
           <h1>Make it comfortable</h1>
@@ -1481,7 +1483,7 @@ export default function App() {
   const signOut = () => api.logout().then(() => { viewKey.current = ""; restoringView.current = false; hidx.current = 0; hmax.current = 0; clear(); cacheClear(); setOverlay(null); setInfo(null); setCourses([]); refresh(); });
   if (session === undefined) return null;
   if (!session) return setup
-    ? <Setup theme={theme} setTheme={setTheme} contrast={contrast} setContrast={setContrast} onDone={finishSetup} />
+    ? <Setup theme={theme} setTheme={setTheme} contrast={contrast} setContrast={setContrast} accent={accent} setAccent={setAccent} onDone={finishSetup} />
     : <Login onDone={refresh} />;
   const refreshBtn = <button className={spin ? "icon spin" : "icon"} title="Refresh (F5)" aria-label="Refresh" onClick={doRefresh}><Icon n="refresh" /></button>;
   const shown = courses.filter((c) => c.fullname.toLowerCase().includes(q.toLowerCase()));
