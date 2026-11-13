@@ -88,6 +88,8 @@ npx tauri icon path/to/icon.png
 
 `zenith --screenshot` shows invented course names, teachers and a made-up username (different on each launch) instead of your account, so you can take screenshots without exposing real data. It sends nothing to any Moodle site and never reads or changes your saved login. Close any running Zenith window first, because a second launch hands its arguments to the first instance instead of starting a new one. In development, npm swallows the first `--`, and the Tauri CLI needs two more (the first ends its own options, the second starts the app's): `npm run tauri dev -- -- -- --screenshot`.
 
+`zenith --fresh` (desktop, for debugging) starts like a first install: the first-launch setup and the login screen show again, with no settings, caches or downloads. All of it lives in a temporary folder and the login only in memory, so your real login, settings and downloads are never read or changed, and the folder is deleted when you close the app. Close any running Zenith first (same reason as above). On macOS the web view's storage cannot be moved, so only the login, saved-files list and downloads are fresh there. In development: `npm run tauri dev -- -- -- --fresh`.
+
 ## Building
 
 ```bash

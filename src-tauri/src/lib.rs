@@ -40,6 +40,14 @@ const RUNNABLE: &[&str] = &[
 /// Serialises read-modify-write of downloads.json, so two downloads finishing together keep both entries.
 static MANIFEST: Mutex<()> = Mutex::new(());
 
+/// `zenith --fresh` (desktop, for debugging) starts like a first install: the web view's storage (settings, caches), the saved-files
+/// list and the downloads live in a temporary folder, and the login only in memory. The real ones are never read or changed, and the
+/// folder is deleted when the app closes.
+static FRESH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+fn fresh_dir() -> Option<&'static std::path::Path> {
+    FRESH.get().map(|p| p.as_path())
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Session {
     site: String,
@@ -86,7 +94,14 @@ mod secret {
         use std::io::Write;
         o.open(p)?.write_all(v.as_bytes())
     }
+    static MEM: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None); // the login in `--fresh` mode
     pub fn set(app: &AppHandle, v: &str) {
+        if super::fresh_dir().is_some() {
+            if let Ok(mut m) = MEM.lock() {
+                *m = Some(v.to_string());
+            }
+            return;
+        }
         if entry().is_ok_and(|e| e.set_password(v).is_ok()) {
             // a fallback file from when the keychain was unavailable must not survive as a second copy
             if let Some(p) = file(app) {
@@ -101,10 +116,19 @@ mod secret {
         }
     }
     pub fn get(app: &AppHandle) -> Option<String> {
+        if super::fresh_dir().is_some() {
+            return MEM.lock().ok()?.clone();
+        }
         // the file only exists because the keychain failed, so it holds the newest login
         file(app).and_then(|p| load_file(&p)).or_else(|| entry().ok()?.get_password().ok())
     }
     pub fn del(app: &AppHandle) {
+        if super::fresh_dir().is_some() {
+            if let Ok(mut m) = MEM.lock() {
+                *m = None;
+            }
+            return;
+        }
         if let Ok(e) = entry() {
             let _ = e.delete_credential();
         }
@@ -258,7 +282,10 @@ fn start_sso(app: AppHandle, site: String, wwwroot: Option<String>) -> Result<()
 /// The login attempt (site, passport) is kept on disk, because Android can close the app while the browser is open: the
 /// callback then starts the app again and still has to match the attempt it belongs to.
 fn pending_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = match fresh_dir() {
+        Some(d) => d.to_path_buf(),
+        None => app.path().app_data_dir().map_err(|e| e.to_string())?,
+    };
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
@@ -451,7 +478,7 @@ struct DlEntry {
 }
 
 fn manifest_path(app: &AppHandle) -> Option<std::path::PathBuf> {
-    let d = app.path().app_data_dir().ok()?;
+    let d = fresh_dir().map(|d| d.to_path_buf()).or_else(|| app.path().app_data_dir().ok())?;
     std::fs::create_dir_all(&d).ok()?;
     Some(d.join("downloads.json"))
 }
@@ -606,6 +633,9 @@ fn open_external(app: AppHandle, url: String) -> Result<(), String> {
 }
 
 fn default_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    if let Some(d) = fresh_dir() {
+        return Ok(d.join("downloads"));
+    }
     // A phone has no Downloads folder an app can write to without extra permissions: files stay in the app's own storage
     let (base, name) = if cfg!(mobile) {
         (app.path().app_data_dir(), "downloads")
@@ -1327,6 +1357,13 @@ fn take_sso_error(state: State<AppState>) -> Option<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(desktop)]
+    if std::env::args().any(|a| a == "--fresh") {
+        let d = std::env::temp_dir().join(format!("zenith-fresh-{}", uuid::Uuid::new_v4()));
+        if std::fs::create_dir_all(&d).is_ok() {
+            let _ = FRESH.set(d);
+        }
+    }
     let mut app = tauri::Builder::default();
     #[cfg(desktop)]
     {
@@ -1356,6 +1393,16 @@ pub fn run() {
                 for u in urls {
                     handle_url(&handle, u.as_str());
                 }
+            }
+            // The window is made here, after the login that started the app was saved (so the page sees it), and not from the config
+            // on desktop: `--fresh` gives it a web view folder of its own. (Mobile still uses the window from the config.)
+            #[cfg(desktop)]
+            {
+                let mut win = tauri::WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?;
+                if let Some(d) = fresh_dir() {
+                    win = win.data_directory(d.join("webview")).title("Zenith (fresh install, deleted on exit)");
+                }
+                win.build()?;
             }
             app.deep_link().on_open_url(move |ev| {
                 // Android calls this on its UI thread, and handle_url saves the login through a plugin call that needs that
@@ -1400,8 +1447,15 @@ pub fn run() {
             fetch_content,
             upload_draft_file
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Zenith");
+        .build(tauri::generate_context!())
+        .expect("error while building Zenith")
+        .run(|_, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(d) = fresh_dir() {
+                    let _ = std::fs::remove_dir_all(d);   // `--fresh`: leave nothing behind
+                }
+            }
+        });
 }
 
 #[cfg(test)]

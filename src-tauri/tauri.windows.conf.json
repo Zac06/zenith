@@ -1,0 +1,12 @@
+{
+  "app": {
+    "windows": [
+      {
+        "title": "Zenith",
+        "width": 1100,
+        "height": 750,
+        "create": false
+      }
+    ]
+  }
+}
